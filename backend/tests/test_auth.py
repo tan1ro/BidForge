@@ -114,6 +114,9 @@ def test_verify_password_with_invalid_hash_format_returns_false():
 
 
 def test_verify_password_supports_legacy_bcrypt_hash(monkeypatch):
+    # Do not use CryptContext().hash() here: it loads the bcrypt native backend and
+    # fails on some CI images when passlib and bcrypt 4.1+ disagree. The route under
+    # test is the bcrypt branch; we only assert that branch calls legacy_pwd_context.verify.
     legacy_hash = "$2b$12$examplelegacyhashvalueforbranch"
     monkeypatch.setattr(
         auth.legacy_pwd_context,

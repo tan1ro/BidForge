@@ -8,4 +8,6 @@ python-jose[cryptography]
 pytest
 pytest-asyncio
 httpx
+# passlib 1.7.x is incompatible with bcrypt 4.1+ (AttributeError: __about__).
 passlib[bcrypt]
+bcrypt<4.1
