@@ -43,7 +43,7 @@ export default function Signup({ onSignup }) {
       localStorage.setItem("auth_role", role);
       localStorage.setItem("auth_username", username);
       onSignup({ role, username });
-      navigate("/", { replace: true });
+      navigate("/auctions", { replace: true });
     } catch (err) {
       setError(parseApiError(err, "Signup failed"));
     } finally {

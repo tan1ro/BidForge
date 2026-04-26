@@ -3,6 +3,7 @@ import sys
 
 import pytest
 from fastapi import HTTPException
+from passlib.context import CryptContext
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
@@ -111,6 +112,12 @@ def test_hash_password_uses_pbkdf2_prefix():
 
 def test_verify_password_with_invalid_hash_format_returns_false():
     assert auth.verify_password("secret123", "not-a-valid-hash") is False
+
+
+def test_verify_password_supports_legacy_bcrypt_hash():
+    ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
+    legacy_hash = ctx.hash("secret123")
+    assert auth.verify_password("secret123", legacy_hash) is True
 
 
 def test_user_from_token_invalid_payload_rejected():

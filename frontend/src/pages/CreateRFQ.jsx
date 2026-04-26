@@ -433,7 +433,7 @@ export default function CreateRFQ() {
                 </Grid>
               </Grid>
               <Stack direction="row" justifyContent="flex-end" spacing={1.5}>
-                <Button variant="outlined" onClick={() => navigate('/')}>Cancel</Button>
+                <Button variant="outlined" onClick={() => navigate('/auctions')}>Cancel</Button>
                 <Button type="submit" variant="contained" startIcon={<SaveOutlinedIcon />} disabled={loading}>
                   {loading ? 'Creating...' : 'Create RFQ'}
                 </Button>

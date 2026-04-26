@@ -8,6 +8,7 @@ import os
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
+from passlib.context import CryptContext
 from pydantic import BaseModel
 
 from config import settings
@@ -44,6 +45,7 @@ class UserProfileResponse(BaseModel):
 
 
 bearer_scheme = HTTPBearer(auto_error=False)
+legacy_pwd_context = CryptContext(schemes=["bcrypt", "bcrypt_sha256"], deprecated="auto")
 PBKDF2_ALGORITHM = "pbkdf2_sha256"
 PBKDF2_ITERATIONS = 390000
 PBKDF2_SALT_BYTES = 16
@@ -87,6 +89,13 @@ def hash_password(password: str) -> str:
 
 
 def verify_password(password: str, encoded_password: str) -> bool:
+    # Backward compatibility: existing users may still have passlib bcrypt hashes.
+    if encoded_password.startswith("$2a$") or encoded_password.startswith("$2b$") or encoded_password.startswith("$2y$") or encoded_password.startswith("$bcrypt"):
+        try:
+            return legacy_pwd_context.verify(password, encoded_password)
+        except Exception:
+            return False
+
     try:
         algorithm, iterations, salt_b64, hash_b64 = encoded_password.split("$", 3)
         if algorithm != PBKDF2_ALGORITHM:

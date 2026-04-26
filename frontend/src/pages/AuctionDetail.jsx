@@ -214,7 +214,7 @@ export default function AuctionDetail({ role }) {
           RFQ created successfully. Reference ID: <strong>{location.state.createdReferenceId}</strong>
         </Alert>
       )}
-      <Button component={Link} to="/" startIcon={<ArrowBackOutlinedIcon />} sx={{ width: "fit-content" }}>
+      <Button component={Link} to="/auctions" startIcon={<ArrowBackOutlinedIcon />} sx={{ width: "fit-content" }}>
         Back to auctions
       </Button>
 

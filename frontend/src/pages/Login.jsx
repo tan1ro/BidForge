@@ -32,7 +32,7 @@ export default function Login({ onLogin }) {
       localStorage.setItem('auth_role', role);
       localStorage.setItem('auth_username', username);
       onLogin({ role, username });
-      navigate('/', { replace: true });
+      navigate('/auctions', { replace: true });
     } catch (err) {
       setError(parseApiError(err, "Login failed"));
     } finally {
