@@ -332,7 +332,7 @@ async def test_submit_bid_rejects_when_auction_not_active(monkeypatch):
         transit_time=2,
         validity="7 days",
     )
-    user = auth.UserPrincipal(username="supplier1", role=auth.UserRole.SUPPLIER)
+    user = auth.UserPrincipal(username="bidder1", role=auth.UserRole.BIDDER)
 
     with pytest.raises(HTTPException) as exc:
         await routes.submit_bid(rfq_id, bid, _req(), user)
@@ -359,7 +359,7 @@ async def test_submit_bid_rejects_negative_components(monkeypatch):
     )
     # Force invalid value after model validation to test route guard.
     bid.origin_charges = -1
-    user = auth.UserPrincipal(username="supplier1", role=auth.UserRole.SUPPLIER)
+    user = auth.UserPrincipal(username="bidder1", role=auth.UserRole.BIDDER)
 
     with pytest.raises(HTTPException) as exc:
         await routes.submit_bid(rfq_id, bid, _req(), user)
@@ -384,7 +384,7 @@ async def test_submit_bid_rejects_non_positive_total(monkeypatch):
         transit_time=2,
         validity="7 days",
     )
-    user = auth.UserPrincipal(username="supplier1", role=auth.UserRole.SUPPLIER)
+    user = auth.UserPrincipal(username="bidder1", role=auth.UserRole.BIDDER)
 
     with pytest.raises(HTTPException) as exc:
         await routes.submit_bid(rfq_id, bid, _req(), user)
@@ -417,7 +417,7 @@ async def test_create_rfq_rejects_forced_close_not_greater(monkeypatch):
         extension_duration_minutes=5,
         extension_trigger="bid_received",
     )
-    user = auth.UserPrincipal(username="buyer1", role=auth.UserRole.BUYER)
+    user = auth.UserPrincipal(username="rfqowner1", role=auth.UserRole.RFQOWNER)
 
     with pytest.raises(HTTPException) as exc:
         await routes.create_rfq(payload, user)
@@ -435,7 +435,7 @@ async def test_award_rfq_rejects_active_auction(monkeypatch):
     class FakeBids:
         async def find_one(self, query, sort=None):
             if query.get("_id") == "bid-1" and query.get("rfq_id") == rfq_id:
-                return {"_id": "bid-1", "rfq_id": rfq_id, "carrier_name": "supplier", "total_price": 100.0}
+                return {"_id": "bid-1", "rfq_id": rfq_id, "carrier_name": "bidder", "total_price": 100.0}
             return None
 
         async def count_documents(self, query):
@@ -449,7 +449,7 @@ async def test_award_rfq_rejects_active_auction(monkeypatch):
     monkeypatch.setattr(routes, "rfqs_collection", rfqs)
     monkeypatch.setattr(routes, "bids_collection", bids)
     monkeypatch.setattr(routes, "_update_status_with_logging", fake_update_status)
-    user = auth.UserPrincipal(username="buyer", role=auth.UserRole.BUYER)
+    user = auth.UserPrincipal(username="rfqowner", role=auth.UserRole.RFQOWNER)
 
     with pytest.raises(HTTPException) as exc:
         await routes.award_rfq(rfq_id, routes.AwardRequest(bid_id="bid-1", award_note=""), user)

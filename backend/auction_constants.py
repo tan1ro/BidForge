@@ -28,5 +28,5 @@ def is_british_style_auction(auction_type: str | None) -> bool:
         return False
     if not t or t in BRITISH_STYLE_AUCTION_TYPES:
         return True
-    # Unknown custom label: do not auto-extend; buyer must use a known type.
+    # Unknown custom label: do not auto-extend; rfqowner must use a known type.
     return False

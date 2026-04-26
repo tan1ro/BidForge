@@ -9,30 +9,30 @@ async def seed_demo():
     now = datetime.now(timezone.utc)
     rfq_name = "Demo RFQ - Bangalore to Pune"
 
-    await users_collection.delete_many({"username": {"$in": ["demo_buyer", "demo_supplier_a", "demo_supplier_b"]}})
+    await users_collection.delete_many({"username": {"$in": ["demo_rfqowner", "demo_bidder_a", "demo_bidder_b"]}})
     await rfqs_collection.delete_many({"name": rfq_name})
 
     await users_collection.insert_many(
         [
             {
-                "username": "demo_buyer",
-                "email": "demo_buyer@example.com",
+                "username": "demo_rfqowner",
+                "email": "demo_rfqowner@example.com",
                 "password_hash": hash_password("demo123"),
-                "role": UserRole.BUYER.value,
+                "role": UserRole.RFQOWNER.value,
                 "created_at": now,
             },
             {
-                "username": "demo_supplier_a",
-                "email": "demo_supplier_a@example.com",
+                "username": "demo_bidder_a",
+                "email": "demo_bidder_a@example.com",
                 "password_hash": hash_password("demo123"),
-                "role": UserRole.SUPPLIER.value,
+                "role": UserRole.BIDDER.value,
                 "created_at": now,
             },
             {
-                "username": "demo_supplier_b",
-                "email": "demo_supplier_b@example.com",
+                "username": "demo_bidder_b",
+                "email": "demo_bidder_b@example.com",
                 "password_hash": hash_password("demo123"),
-                "role": UserRole.SUPPLIER.value,
+                "role": UserRole.BIDDER.value,
                 "created_at": now,
             },
         ]
@@ -110,9 +110,9 @@ async def seed_demo():
     )
 
     print("Demo seed complete.")
-    print("Buyer login: demo_buyer / demo123")
-    print("Supplier login: demo_supplier_a / demo123")
-    print("Supplier login: demo_supplier_b / demo123")
+    print("rfqowner login: demo_rfqowner / demo123")
+    print("Bidder login: demo_bidder_a / demo123")
+    print("Bidder login: demo_bidder_b / demo123")
     print(f"RFQ ID: {rfq_id}")
     print("Reference ID: RFQ-DEMO2026")
 

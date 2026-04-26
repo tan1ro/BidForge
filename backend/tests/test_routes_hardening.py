@@ -256,7 +256,7 @@ async def test_list_rfqs_closed_status_includes_force_closed(monkeypatch):
 
     monkeypatch.setattr(routes, "_update_status_with_logging", fake_update_status)
 
-    user = auth.UserPrincipal(username="buyer", role=auth.UserRole.BUYER)
+    user = auth.UserPrincipal(username="rfqowner", role=auth.UserRole.RFQOWNER)
     result = await routes.list_rfqs(page=1, page_size=20, status="closed", user=user)
 
     assert result["total"] == 2
@@ -264,7 +264,10 @@ async def test_list_rfqs_closed_status_includes_force_closed(monkeypatch):
         AuctionStatus.CLOSED.value,
         AuctionStatus.FORCE_CLOSED.value,
     }
-    assert rfqs_collection.last_query == {"status": {"$in": [AuctionStatus.CLOSED, AuctionStatus.FORCE_CLOSED]}}
+    assert rfqs_collection.last_query == {
+        "status": {"$in": [AuctionStatus.CLOSED, AuctionStatus.FORCE_CLOSED]},
+        "created_by": "rfqowner",
+    }
 
 
 @pytest.mark.asyncio
@@ -296,7 +299,7 @@ async def test_submit_bid_trigger_bid_received_calls_extension(monkeypatch):
         transit_time=2,
         validity="7 days",
     )
-    user = auth.UserPrincipal(username="supplier", role=auth.UserRole.SUPPLIER)
+    user = auth.UserPrincipal(username="bidder", role=auth.UserRole.BIDDER)
     await routes.submit_bid(rfq_id, bid, _req(), user)
     assert len(extension_calls) == 1
 
@@ -332,7 +335,7 @@ async def test_submit_bid_trigger_rank_change_calls_extension_only_on_rank_chang
         transit_time=2,
         validity="7 days",
     )
-    user = auth.UserPrincipal(username="supplier", role=auth.UserRole.SUPPLIER)
+    user = auth.UserPrincipal(username="bidder", role=auth.UserRole.BIDDER)
     await routes.submit_bid(rfq_id, bid, _req(), user)
     assert len(extension_calls) == 1
 
@@ -368,7 +371,7 @@ async def test_submit_bid_trigger_l1_change_calls_extension_only_on_l1_change(mo
         transit_time=2,
         validity="7 days",
     )
-    user = auth.UserPrincipal(username="supplier", role=auth.UserRole.SUPPLIER)
+    user = auth.UserPrincipal(username="bidder", role=auth.UserRole.BIDDER)
     await routes.submit_bid(rfq_id, non_l1_bid, _req(), user)
     assert len(extension_calls) == 0
 
@@ -407,7 +410,7 @@ async def test_submit_bid_no_extension_outside_trigger_window(monkeypatch):
         transit_time=2,
         validity="7 days",
     )
-    user = auth.UserPrincipal(username="supplier", role=auth.UserRole.SUPPLIER)
+    user = auth.UserPrincipal(username="bidder", role=auth.UserRole.BIDDER)
     old_close = rfq["current_close_time"]
     await routes.submit_bid(rfq_id, bid, _req(), user)
     assert rfq["current_close_time"] == old_close
@@ -446,7 +449,7 @@ async def test_submit_bid_extension_updates_close_and_broadcasts_ws(monkeypatch)
         transit_time=2,
         validity="7 days",
     )
-    user = auth.UserPrincipal(username="supplier", role=auth.UserRole.SUPPLIER)
+    user = auth.UserPrincipal(username="bidder", role=auth.UserRole.BIDDER)
     await routes.submit_bid(rfq_id, bid, _req(), user)
 
     assert rfq["current_close_time"] > old_close
@@ -487,7 +490,7 @@ async def test_submit_bid_rejected_after_forced_close_and_status_transitions(mon
         transit_time=2,
         validity="7 days",
     )
-    user = auth.UserPrincipal(username="supplier", role=auth.UserRole.SUPPLIER)
+    user = auth.UserPrincipal(username="bidder", role=auth.UserRole.BIDDER)
     with pytest.raises(HTTPException) as exc:
         await routes.submit_bid(rfq_id, bid, _req(), user)
     assert exc.value.status_code == 400
@@ -504,7 +507,7 @@ async def test_submit_bid_rejected_after_forced_close_and_status_transitions(mon
 
 
 @pytest.mark.asyncio
-async def test_submit_bid_binds_identity_to_authenticated_supplier(monkeypatch):
+async def test_submit_bid_binds_identity_to_authenticated_bidder(monkeypatch):
     now = datetime.now(timezone.utc)
     rfq = make_rfq(now, extension_trigger="bid_received")
     rfq_id = str(rfq["_id"])
@@ -526,10 +529,10 @@ async def test_submit_bid_binds_identity_to_authenticated_supplier(monkeypatch):
         transit_time=2,
         validity="7 days",
     )
-    user = auth.UserPrincipal(username="real_supplier_user", role=auth.UserRole.SUPPLIER)
+    user = auth.UserPrincipal(username="real_bidder_user", role=auth.UserRole.BIDDER)
     res = await routes.submit_bid(rfq_id, bid, _req(), user)
 
-    assert bids_collection.docs[0]["carrier_name"] == "real_supplier_user"
+    assert bids_collection.docs[0]["carrier_name"] == "real_bidder_user"
     assert bids_collection.docs[0]["carrier_display_name"] == "Spoofed Carrier"
     assert res["carrier_name"] == "Spoofed Carrier"
 
@@ -547,7 +550,7 @@ async def test_submit_bid_duplicate_key_race_recovers_with_retry(monkeypatch):
             self.raise_duplicate_once = True
 
         async def find_one(self, query, sort=None):
-            if query.get("rfq_id") == rfq_id and query.get("carrier_name") == "supplier" and self.raise_duplicate_once:
+            if query.get("rfq_id") == rfq_id and query.get("carrier_name") == "bidder" and self.raise_duplicate_once:
                 return None
             return await super().find_one(query, sort=sort)
 
@@ -593,11 +596,11 @@ async def test_submit_bid_duplicate_key_race_recovers_with_retry(monkeypatch):
         transit_time=2,
         validity="7 days",
     )
-    user = auth.UserPrincipal(username="supplier", role=auth.UserRole.SUPPLIER)
+    user = auth.UserPrincipal(username="bidder", role=auth.UserRole.BIDDER)
     res = await routes.submit_bid(rfq_id, bid, _req(), user)
     assert bids_collection.raise_duplicate_once is False
-    supplier_rows = [row for row in bids_collection.docs if row.get("carrier_name") == "supplier"]
-    assert len(supplier_rows) == 1
+    bidder_rows = [row for row in bids_collection.docs if row.get("carrier_name") == "bidder"]
+    assert len(bidder_rows) == 1
     assert res["carrier_name"] == "Carrier Label"
     assert res["total_price"] == 800.0
 
@@ -629,9 +632,9 @@ async def test_metrics_extension_impact_groups_extended_vs_non_extended(monkeypa
     monkeypatch.setattr(routes, "bids_collection", bids_collection)
     monkeypatch.setattr(routes, "activity_logs_collection", FakeActivityCollection())
     monkeypatch.setattr(routes, "log_audit", _noop_async)
-    user = auth.UserPrincipal(username="buyer", role=auth.UserRole.BUYER)
+    user = auth.UserPrincipal(username="rfqowner", role=auth.UserRole.RFQOWNER)
 
-    async def fake_ei(period: str):
+    async def fake_ei(period: str, created_by: str | None = None):
         return (
             [
                 {
@@ -667,8 +670,8 @@ async def test_award_rfq_accepts_closed_auction_once(monkeypatch):
     winning_bid = {
         "_id": "bid-1",
         "rfq_id": rfq_id,
-        "carrier_name": "supplierA",
-        "carrier_display_name": "Supplier A Logistics",
+        "carrier_name": "bidderA",
+        "carrier_display_name": "Bidder A Logistics",
         "total_price": 750.0,
         "created_at": now,
     }
@@ -683,7 +686,7 @@ async def test_award_rfq_accepts_closed_auction_once(monkeypatch):
         return doc["status"]
 
     monkeypatch.setattr(routes, "_update_status_with_logging", fake_update_status)
-    user = auth.UserPrincipal(username="buyer", role=auth.UserRole.BUYER)
+    user = auth.UserPrincipal(username="rfqowner", role=auth.UserRole.RFQOWNER)
     res = await routes.award_rfq(rfq_id, routes.AwardRequest(bid_id="bid-1", award_note="Best lead time"), user)
     assert res["awarded_bid_id"] == "bid-1"
-    assert res["awarded_supplier"] == "supplierA"
+    assert res["awarded_bidder"] == "bidderA"

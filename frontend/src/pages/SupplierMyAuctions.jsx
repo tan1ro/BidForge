@@ -3,9 +3,11 @@ import { Link } from "react-router-dom";
 import {
   Alert,
   Box,
+  Button,
   Card,
   CardContent,
   Chip,
+  Grid,
   LinearProgress,
   Stack,
   Table,
@@ -15,13 +17,12 @@ import {
   TableHead,
   TableRow,
   Typography,
+  useMediaQuery,
 } from "@mui/material";
-import { getSupplierMyAuctions } from "../api";
+import { useTheme } from "@mui/material/styles";
+import { getBidderMyAuctions } from "../api";
 import { parseApiError } from "../utils/errorHandling";
-
-function formatShort(dateStr) {
-  return new Date(dateStr).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
-}
+import { formatDate } from "../utils/auctionFormatters";
 
 function countDownTo(target) {
   const end = new Date(target).getTime();
@@ -36,7 +37,9 @@ function countDownTo(target) {
   };
 }
 
-export default function SupplierMyAuctions() {
+export default function BidderMyAuctions() {
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down("md"));
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
@@ -45,7 +48,7 @@ export default function SupplierMyAuctions() {
   const load = useCallback(async () => {
     setErr("");
     try {
-      const { data } = await getSupplierMyAuctions();
+      const { data } = await getBidderMyAuctions();
       setItems(data?.items || []);
     } catch (e) {
       setErr(parseApiError(e, "Failed to load your auctions"));
@@ -55,7 +58,10 @@ export default function SupplierMyAuctions() {
   }, []);
 
   useEffect(() => {
-    void load();
+    const id = setTimeout(() => {
+      void load();
+    }, 0);
+    return () => clearTimeout(id);
   }, [load]);
 
   useEffect(() => {
@@ -88,9 +94,49 @@ export default function SupplierMyAuctions() {
             <Typography color="text.secondary">You have not bid on any open RFQ yet. Browse the auction list to participate.</Typography>
           </CardContent>
         </Card>
+      ) : isMobile ? (
+        <Stack spacing={1.4}>
+          {items.map((row) => {
+            const isActive = row.status === "active";
+            const cd = isActive && row.current_close_time ? countDownTo(row.current_close_time)() : "—";
+            if (isActive) void nowTick;
+            return (
+              <Card key={row.rfq_id} variant="outlined">
+                <CardContent>
+                  <Stack spacing={1}>
+                    <Stack direction="row" justifyContent="space-between" alignItems="center">
+                      <Box>
+                        <Typography variant="subtitle1">{row.name}</Typography>
+                        <Typography variant="caption" color="text.secondary">{row.reference_id}</Typography>
+                      </Box>
+                      <Chip size="small" label={row.status} />
+                    </Stack>
+                    <Grid container spacing={1}>
+                      <Grid size={6}>
+                        <Typography variant="caption" color="text.secondary">My rank</Typography>
+                        <Typography variant="body2">L{row.my_rank}</Typography>
+                      </Grid>
+                      <Grid size={6}>
+                        <Typography variant="caption" color="text.secondary">My bid</Typography>
+                        <Typography variant="body2">₹{Number(row.my_total_price || 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })}</Typography>
+                      </Grid>
+                      <Grid size={12}>
+                        <Typography variant="caption" color="text.secondary">Close status</Typography>
+                        <Typography variant="body2">{isActive ? `${cd} left` : "Closed / not active"}</Typography>
+                      </Grid>
+                    </Grid>
+                    <Button component={Link} to={`/auction/${row.rfq_id}`} size="small" sx={{ alignSelf: "flex-start" }}>
+                      Open auction
+                    </Button>
+                  </Stack>
+                </CardContent>
+              </Card>
+            );
+          })}
+        </Stack>
       ) : (
         <TableContainer component={Card}>
-          <Table size="small">
+          <Table size="small" sx={{ minWidth: 820 }}>
             <TableHead>
               <TableRow>
                 <TableCell>RFQ</TableCell>
@@ -119,7 +165,7 @@ export default function SupplierMyAuctions() {
                     <TableCell>
                       <Chip size="small" label={row.status} />
                     </TableCell>
-                    <TableCell>{row.bid_start_time ? formatShort(row.bid_start_time) : "—"}</TableCell>
+                    <TableCell>{row.bid_start_time ? formatDate(row.bid_start_time) : "—"}</TableCell>
                     <TableCell>{isActive ? <strong>{cd}</strong> : "—"}</TableCell>
                     <TableCell>₹{Number(row.my_total_price || 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })}</TableCell>
                     <TableCell>L{row.my_rank}</TableCell>

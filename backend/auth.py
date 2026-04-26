@@ -16,8 +16,19 @@ from database import users_collection
 
 
 class UserRole(str, Enum):
-    BUYER = "buyer"
-    SUPPLIER = "supplier"
+    RFQOWNER = "rfqowner"
+    BIDDER = "bidder"
+
+
+def normalize_role_value(value: str | None) -> str | None:
+    if value is None:
+        return None
+    role = value.strip().lower()
+    if role == "rfqowner":
+        return UserRole.RFQOWNER.value
+    if role == "bidder":
+        return UserRole.BIDDER.value
+    return role
 
 
 class UserPrincipal(BaseModel):
@@ -44,6 +55,24 @@ class UserProfileResponse(BaseModel):
     created_at: datetime
 
 
+class UserSettings(BaseModel):
+    email_notifications: bool = True
+    timezone: str = "Asia/Kolkata"
+    default_rfq_page_size: int = 20
+    use_24h_time: bool = False
+    date_format: str = "medium"
+    auto_refresh_seconds: int = 10
+
+
+class UserSettingsUpdateRequest(BaseModel):
+    email_notifications: bool
+    timezone: str
+    default_rfq_page_size: int
+    use_24h_time: bool
+    date_format: str
+    auto_refresh_seconds: int
+
+
 bearer_scheme = HTTPBearer(auto_error=False)
 legacy_pwd_context = CryptContext(schemes=["bcrypt", "bcrypt_sha256"], deprecated="auto")
 PBKDF2_ALGORITHM = "pbkdf2_sha256"
@@ -65,7 +94,8 @@ async def authenticate_user(company_name_or_email: str, password: str) -> UserPr
         return None
     if not verify_password(password, user["password_hash"]):
         return None
-    return UserPrincipal(username=user["username"], role=UserRole(user["role"]))
+    normalized_role = normalize_role_value(user.get("role"))
+    return UserPrincipal(username=user["username"], role=UserRole(normalized_role))
 
 
 async def get_login_error(company_name_or_email: str, password: str) -> str | None:
@@ -121,6 +151,14 @@ async def create_user(company_name: str, email: str, password: str, role: UserRo
             "email": email,
             "password_hash": hash_password(password),
             "role": role.value,
+            "settings": {
+                "email_notifications": True,
+                "timezone": "Asia/Kolkata",
+                "default_rfq_page_size": 20,
+                "use_24h_time": False,
+                "date_format": "medium",
+                "auto_refresh_seconds": 10,
+            },
             "created_at": datetime.now(timezone.utc),
         }
     )
@@ -140,8 +178,8 @@ def user_from_token(token: str) -> UserPrincipal:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
     username = payload.get("sub")
-    role = payload.get("role")
-    if not username or role not in {UserRole.BUYER.value, UserRole.SUPPLIER.value}:
+    role = normalize_role_value(payload.get("role"))
+    if not username or role not in {UserRole.RFQOWNER.value, UserRole.BIDDER.value}:
         raise HTTPException(status_code=401, detail="Invalid token payload")
 
     return UserPrincipal(username=username, role=UserRole(role))

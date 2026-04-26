@@ -25,14 +25,16 @@ import {
   TableRow,
   TextField,
   Typography,
+  useMediaQuery,
 } from "@mui/material";
+import { useTheme } from "@mui/material/styles";
 import SearchIcon from "@mui/icons-material/Search";
 import AddCircleOutlineIcon from "@mui/icons-material/AddCircleOutline";
-import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import VisibilityOutlinedIcon from "@mui/icons-material/VisibilityOutlined";
-import { listRFQs, deleteRFQ, cloneRFQ } from '../api';
+import { listRFQs, deleteRFQ } from '../api';
 import { parseApiError } from "../utils/errorHandling";
+import { formatDate, getPreferredTimezoneLabel, getUserSettings } from "../utils/auctionFormatters";
 
 const STATUS_LABELS = {
   upcoming: 'Upcoming',
@@ -41,13 +43,6 @@ const STATUS_LABELS = {
   closed: 'Closed',
   force_closed: 'Force Closed',
 };
-
-function formatDate(dateStr) {
-  return new Date(dateStr).toLocaleString('en-IN', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  });
-}
 
 function formatCurrency(val) {
   if (val == null) return '—';
@@ -74,7 +69,9 @@ function statusColor(status) {
 }
 
 export default function RFQList({ role }) {
-  const timezoneLabel = Intl.DateTimeFormat().resolvedOptions().timeZone || "local timezone";
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down("md"));
+  const timezoneLabel = getPreferredTimezoneLabel();
   const [rfqs, setRfqs] = useState([]);
   const [totalRFQs, setTotalRFQs] = useState(0);
   const [page, setPage] = useState(1);
@@ -83,7 +80,8 @@ export default function RFQList({ role }) {
   const [loadError, setLoadError] = useState("");
   const [filter, setFilter] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
-  const [sortBy, setSortBy] = useState('created_desc');
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
+  const [sortBy, setSortBy] = useState('total_asc');
   const [snack, setSnack] = useState({ open: false, message: "", severity: "success" });
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [tick, setTick] = useState(0);
@@ -94,7 +92,12 @@ export default function RFQList({ role }) {
     try {
       setLoadError("");
       const statusFilter = filter === 'all' ? undefined : (filter === 'closed' ? 'closed' : filter);
-      const res = await listRFQs({ page, page_size: pageSize, status: statusFilter });
+      const res = await listRFQs({
+        page,
+        page_size: pageSize,
+        status: statusFilter,
+        name: debouncedSearchQuery || undefined,
+      });
       const payload = Array.isArray(res.data) ? { items: res.data, total: res.data.length } : res.data;
       const items = payload.items || [];
       const prevMap = prevCloseByIdRef.current;
@@ -130,15 +133,25 @@ export default function RFQList({ role }) {
     } finally {
       setLoading(false);
     }
-  }, [filter, page, pageSize]);
+  }, [debouncedSearchQuery, filter, page, pageSize]);
 
   useEffect(() => {
+    const handle = setTimeout(() => {
+      setDebouncedSearchQuery(searchQuery.trim());
+    }, 400);
+    return () => clearTimeout(handle);
+  }, [searchQuery]);
+
+  useEffect(() => {
+    const settings = getUserSettings();
+    const refreshSeconds = Number(settings.auto_refresh_seconds || 10);
+    const refreshMs = Math.max(5000, refreshSeconds * 1000);
     const bootstrap = setTimeout(() => {
       void loadRFQs();
     }, 0);
     intervalRef.current = setInterval(() => {
       void loadRFQs();
-    }, 10000);
+    }, refreshMs);
     const t = setInterval(() => setTick((x) => x + 1), 1000);
     return () => {
       clearTimeout(bootstrap);
@@ -146,17 +159,6 @@ export default function RFQList({ role }) {
       clearInterval(t);
     };
   }, [loadRFQs]);
-
-  async function handleClone(rfq) {
-    if (role !== "buyer") return;
-    try {
-      const { data } = await cloneRFQ(rfq.id);
-      showToast(`Cloned. New reference: ${data?.reference_id || ""}`);
-      loadRFQs();
-    } catch (err) {
-      showToast(parseApiError(err, "Failed to clone RFQ"), "error");
-    }
-  }
 
   async function handleDelete(rfq) {
     try {
@@ -182,15 +184,6 @@ export default function RFQList({ role }) {
       ? rfqs.filter(r => r.status === 'closed' || r.status === 'force_closed')
       : rfqs.filter(r => r.status === filter);
 
-  // Apply search
-  if (searchQuery.trim()) {
-    const q = searchQuery.toLowerCase();
-    filtered = filtered.filter(r => 
-      r.name.toLowerCase().includes(q) || 
-      r.reference_id.toLowerCase().includes(q)
-    );
-  }
-
   // Apply sorting
   filtered = [...filtered].sort((a, b) => {
     switch (sortBy) {
@@ -204,6 +197,10 @@ export default function RFQList({ role }) {
         return new Date(b.current_close_time) - new Date(a.current_close_time);
       case 'bids_desc':
         return b.total_bids - a.total_bids;
+      case 'total_asc':
+        return Number(a.lowest_bid ?? Number.POSITIVE_INFINITY) - Number(b.lowest_bid ?? Number.POSITIVE_INFINITY);
+      case 'total_desc':
+        return Number(b.lowest_bid ?? -1) - Number(a.lowest_bid ?? -1);
       default:
         return 0;
     }
@@ -235,7 +232,7 @@ export default function RFQList({ role }) {
             All times shown in {timezoneLabel}
           </Typography>
         </Box>
-        {role === "buyer" && (
+        {role === "rfqowner" && (
           <Button component={Link} to="/create" variant="contained" startIcon={<AddCircleOutlineIcon />}>
             Create RFQ
           </Button>
@@ -259,8 +256,11 @@ export default function RFQList({ role }) {
         <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
           <TextField
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search by RFQ name or reference ID"
+            onChange={(e) => {
+              setSearchQuery(e.target.value);
+              setPage(1);
+            }}
+            placeholder="Search by RFQ name"
             fullWidth
             InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon fontSize="small" /></InputAdornment> }}
           />
@@ -271,6 +271,8 @@ export default function RFQList({ role }) {
             <MenuItem value="closed">Closed</MenuItem>
           </TextField>
           <TextField select value={sortBy} onChange={(e) => setSortBy(e.target.value)} sx={{ minWidth: 180 }}>
+            <MenuItem value="total_asc">Total (Lowest Bid): Low to High</MenuItem>
+            <MenuItem value="total_desc">Total (Lowest Bid): High to Low</MenuItem>
             <MenuItem value="created_desc">Newest Created</MenuItem>
             <MenuItem value="created_asc">Oldest Created</MenuItem>
             <MenuItem value="close_date_asc">Closing Soon</MenuItem>
@@ -287,9 +289,55 @@ export default function RFQList({ role }) {
 
       {filtered.length === 0 ? (
         <Alert severity="info">No auctions found for the selected filters.</Alert>
+      ) : isMobile ? (
+        <Stack spacing={1.5}>
+          {filtered.map((rfq) => (
+            <Card key={rfq.id} variant="outlined">
+              <CardContent>
+                <Stack spacing={1.2}>
+                  <Stack direction="row" justifyContent="space-between" alignItems="center">
+                    <Box>
+                      <Typography variant="subtitle1">{rfq.name}</Typography>
+                      <Typography variant="caption" color="text.secondary">{rfq.reference_id}</Typography>
+                    </Box>
+                    <Chip size="small" label={STATUS_LABELS[rfq.status]} color={statusColor(rfq.status)} />
+                  </Stack>
+                  <Typography variant="body2" color="text.secondary">
+                    Route: {rfq.pickup_location && rfq.delivery_location ? `${rfq.pickup_location} -> ${rfq.delivery_location}` : "—"}
+                  </Typography>
+                  <Grid container spacing={1}>
+                    <Grid size={6}>
+                      <Typography variant="caption" color="text.secondary">Lowest bid</Typography>
+                      <Typography variant="body2">{formatCurrency(rfq.lowest_bid)}</Typography>
+                    </Grid>
+                    <Grid size={6}>
+                      <Typography variant="caption" color="text.secondary">Bids</Typography>
+                      <Typography variant="body2">{rfq.total_bids}</Typography>
+                    </Grid>
+                    <Grid size={12}>
+                      <Typography variant="caption" color="text.secondary">Current close</Typography>
+                      <Typography variant="body2">
+                        {formatDate(rfq.current_close_time)}
+                        {rfq.status === "active" ? ` (${countdownTo(rfq.current_close_time)} left)` : ""}
+                      </Typography>
+                    </Grid>
+                  </Grid>
+                  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                    <Button component={Link} to={`/auction/${rfq.id}`} size="small" startIcon={<VisibilityOutlinedIcon />}>View</Button>
+                    {role === "rfqowner" && (
+                      <>
+                        <Button size="small" color="error" startIcon={<DeleteOutlineIcon />} onClick={() => setConfirmDelete(rfq)}>Delete</Button>
+                      </>
+                    )}
+                  </Stack>
+                </Stack>
+              </CardContent>
+            </Card>
+          ))}
+        </Stack>
       ) : (
         <TableContainer component={Paper}>
-          <Table size="small">
+          <Table size="small" sx={{ minWidth: 980 }}>
             <TableHead>
               <TableRow>
                 <TableCell>RFQ Name</TableCell>
@@ -328,11 +376,8 @@ export default function RFQList({ role }) {
                   <TableCell align="right">
                     <Stack direction="row" justifyContent="flex-end" spacing={1}>
                       <Button component={Link} to={`/auction/${rfq.id}`} size="small" startIcon={<VisibilityOutlinedIcon />}>View</Button>
-                      {role === "buyer" && (
+                      {role === "rfqowner" && (
                         <>
-                          <Button size="small" startIcon={<ContentCopyIcon />} onClick={() => void handleClone(rfq)}>
-                            Clone
-                          </Button>
                           <Button size="small" color="error" startIcon={<DeleteOutlineIcon />} onClick={() => setConfirmDelete(rfq)}>
                             Delete
                           </Button>
@@ -347,13 +392,13 @@ export default function RFQList({ role }) {
         </TableContainer>
       )}
 
-      <Stack direction="row" justifyContent="space-between" sx={{ pt: 0.5 }}>
+      <Stack direction={{ xs: "column", sm: "row" }} spacing={1} justifyContent="space-between" sx={{ pt: 0.5 }}>
         <Button variant="outlined" disabled={page === 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>Previous</Button>
         <Typography color="text.secondary" sx={{ alignSelf: "center" }}>Page {page}</Typography>
         <Button variant="outlined" disabled={page * pageSize >= totalRFQs} onClick={() => setPage((p) => p + 1)}>Next</Button>
       </Stack>
 
-      <Dialog open={Boolean(confirmDelete) && role === "buyer"} onClose={() => setConfirmDelete(null)}>
+      <Dialog open={Boolean(confirmDelete) && role === "rfqowner"} onClose={() => setConfirmDelete(null)}>
         <DialogTitle>Delete RFQ?</DialogTitle>
         <DialogContent>
           <Typography variant="body2">

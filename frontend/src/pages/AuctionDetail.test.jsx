@@ -68,7 +68,7 @@ describe("AuctionDetail", () => {
     render(
       <MemoryRouter initialEntries={["/auction/rfq-1"]}>
         <Routes>
-          <Route path="/auction/:id" element={<AuctionDetail role="supplier" />} />
+          <Route path="/auction/:id" element={<AuctionDetail role="bidder" />} />
         </Routes>
       </MemoryRouter>
     );
@@ -96,11 +96,11 @@ describe("AuctionDetail", () => {
     });
   });
 
-  it("shows activity tab for supplier role", async () => {
+  it("shows activity tab for bidder role", async () => {
     render(
       <MemoryRouter initialEntries={["/auction/rfq-1"]}>
         <Routes>
-          <Route path="/auction/:id" element={<AuctionDetail role="supplier" />} />
+          <Route path="/auction/:id" element={<AuctionDetail role="bidder" />} />
         </Routes>
       </MemoryRouter>
     );
@@ -136,7 +136,7 @@ describe("AuctionDetail", () => {
     render(
       <MemoryRouter initialEntries={["/auction/rfq-1"]}>
         <Routes>
-          <Route path="/auction/:id" element={<AuctionDetail role="buyer" />} />
+          <Route path="/auction/:id" element={<AuctionDetail role="rfqowner" />} />
         </Routes>
       </MemoryRouter>
     );
@@ -147,7 +147,7 @@ describe("AuctionDetail", () => {
     });
   });
 
-  it("shows award winner action for buyer on closed auction", async () => {
+  it("shows award winner action for rfqowner on closed auction", async () => {
     const { getRFQ } = await import("../api");
     getRFQ.mockResolvedValueOnce({
       data: {
@@ -171,7 +171,7 @@ describe("AuctionDetail", () => {
     render(
       <MemoryRouter initialEntries={["/auction/rfq-1"]}>
         <Routes>
-          <Route path="/auction/:id" element={<AuctionDetail role="buyer" />} />
+          <Route path="/auction/:id" element={<AuctionDetail role="rfqowner" />} />
         </Routes>
       </MemoryRouter>
     );

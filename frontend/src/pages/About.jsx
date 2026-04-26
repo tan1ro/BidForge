@@ -1,5 +1,5 @@
 import { Link as RouterLink } from "react-router-dom";
-import { Box, Button, Card, CardContent, Container, Stack, Typography } from "@mui/material";
+import { Button, Card, CardContent, Container, Typography } from "@mui/material";
 
 /**
  * Optional portfolio / author context — separate from the product home page.
@@ -16,7 +16,7 @@ export default function About() {
             About this project
           </Typography>
           <Typography color="text.secondary" paragraph>
-            BidForge is a British-auction style RFQ workflow: buyers publish routes, suppliers bid in rank order,
+            BidForge is a British-auction style RFQ workflow: RFQ Owners publish routes, Bidders bid in rank order,
             and time extensions can apply near the close when configured. This app demonstrates a production-style
             stack (FastAPI, MongoDB, React, MUI) with role-based access and real-time updates.
           </Typography>

@@ -38,7 +38,7 @@ function formatCurrency(val) {
 
 const METRICS_PAGE_SIZE = 20;
 
-export default function BuyerMetrics() {
+export default function RfqownerMetrics() {
   const [period, setPeriod] = useState("day");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -88,7 +88,10 @@ export default function BuyerMetrics() {
   }, [period, bidsPage, extPage, searchBids, searchExt]);
 
   useEffect(() => {
-    void loadMetrics();
+    const id = setTimeout(() => {
+      void loadMetrics();
+    }, 0);
+    return () => clearTimeout(id);
   }, [loadMetrics]);
 
   const winChartData = useMemo(
@@ -163,7 +166,7 @@ export default function BuyerMetrics() {
     <Stack spacing={2.5}>
       <Box>
         <Typography variant="h4">Success Metrics</Typography>
-        <Typography color="text.secondary">Buyer analytics: charts and tables (paginated)</Typography>
+        <Typography color="text.secondary">RFQ Owner analytics: charts and tables (paginated)</Typography>
       </Box>
 
       <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems={{ xs: "flex-start", sm: "center" }} flexWrap="wrap">
@@ -177,7 +180,7 @@ export default function BuyerMetrics() {
             setBidsPage(1);
             setExtPage(1);
           }}
-          sx={{ minWidth: 160 }}
+          sx={{ minWidth: 160, width: { xs: "100%", sm: "auto" } }}
         >
           <MenuItem value="day">Daily</MenuItem>
           <MenuItem value="week">Weekly</MenuItem>
@@ -273,7 +276,7 @@ export default function BuyerMetrics() {
         <Grid size={{ xs: 12, lg: 6 }}>
           <Card sx={{ minHeight: 360 }}>
             <CardContent>
-              <Typography variant="h6" sx={{ mb: 1 }}>Bids per RFQ (this page)</Typography>
+              <Typography variant="h6" sx={{ mb: 1 }}>Bids per RFQ</Typography>
               {bidsPerBar.length === 0 ? (
                 <Typography color="text.secondary">No data.</Typography>
               ) : (
@@ -345,6 +348,7 @@ export default function BuyerMetrics() {
               size="small"
               label="Search RFQs (bids table)"
               value={searchBids}
+              fullWidth
               onChange={(e) => {
                 setSearchBids(e.target.value);
                 setBidsPage(1);
@@ -380,6 +384,7 @@ export default function BuyerMetrics() {
               size="small"
               label="Search RFQs (extensions table)"
               value={searchExt}
+              fullWidth
               onChange={(e) => {
                 setSearchExt(e.target.value);
                 setExtPage(1);

@@ -1,10 +1,13 @@
 import uuid
 import csv
 import io
+import re
 from datetime import datetime, timedelta, timezone
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect, status
+import httpx
 from pymongo.errors import DuplicateKeyError, OperationFailure
+from pydantic import BaseModel, Field
 
 from audit import log_audit
 from auth import UserPrincipal, UserRole, require_roles, user_from_token
@@ -34,6 +37,7 @@ from models import (
     ActivityLogResponse, AuctionStatus, ExtensionTriggerType, AwardRequest,
 )
 from ws_manager import ws_manager
+from config import settings
 
 router = APIRouter(prefix="/api", tags=["RFQ & Auction"])
 
@@ -66,6 +70,7 @@ def serialize_rfq(
         pickup_location=doc.get("pickup_location", ""),
         delivery_location=doc.get("delivery_location", ""),
         auction_type=doc.get("auction_type", "Reverse Auction (lowest wins)"),
+        bidder_visibility_mode=_normalize_visibility_mode(doc.get("bidder_visibility_mode")),
         starting_price=doc.get("starting_price", 0),
         minimum_decrement=doc.get("minimum_decrement", 0),
         technical_specs_attachment=doc.get("technical_specs_attachment", ""),
@@ -74,8 +79,7 @@ def serialize_rfq(
         technical_specs_content_type=doc.get("technical_specs_content_type", ""),
         technical_specs_file_size_bytes=doc.get("technical_specs_file_size_bytes", 0),
         loading_unloading_notes=doc.get("loading_unloading_notes", ""),
-        supplier_visibility_mode=doc.get("supplier_visibility_mode", "full_rank"),
-        awarded_supplier=doc.get("awarded_supplier"),
+        awarded_bidder=doc.get("awarded_bidder"),
         awarded_bid_id=doc.get("awarded_bid_id"),
         awarded_at=doc.get("awarded_at"),
         award_note=doc.get("award_note"),
@@ -94,6 +98,7 @@ def serialize_bid(doc: dict) -> dict:
         id=str(doc["_id"]),
         rfq_id=str(doc["rfq_id"]),
         carrier_name=doc.get("carrier_display_name") or doc["carrier_name"],
+        carrier_account_name=doc["carrier_name"],
         freight_charges=doc["freight_charges"],
         origin_charges=doc["origin_charges"],
         destination_charges=doc["destination_charges"],
@@ -187,14 +192,72 @@ def _pagination_meta(items: list, total: int, page: int, page_size: int):
     }
 
 
-def _normalize_visibility_mode(value: str) -> str:
-    if value not in {"full_rank", "masked_competitor"}:
-        raise HTTPException(400, "Supplier visibility mode must be full_rank or masked_competitor")
-    return value
+def _ensure_owner_access(user: UserPrincipal, rfq: dict):
+    owner = rfq.get("created_by")
+    if user.role == UserRole.RFQOWNER and owner and owner != user.username:
+        raise HTTPException(404, "RFQ not found")
+
+
+def _normalize_visibility_mode(value: str | None) -> str:
+    normalized = (value or "").strip().lower()
+    return normalized if normalized in {"full_rank", "masked_competitor"} else "full_rank"
+
+
+class DashboardRecommendationRequest(BaseModel):
+    summary: dict = Field(default_factory=dict)
+
+
+async def _gemini_recommendations(role: str, summary: dict) -> list[str]:
+    if not settings.gemini_api_key:
+        return []
+
+    prompt = (
+        "You are a procurement analytics assistant for an RFQ British auction system.\n"
+        f"Role: {role}\n"
+        "Dashboard summary JSON:\n"
+        f"{summary}\n\n"
+        "Generate exactly 3 concise action recommendations. "
+        "Each recommendation must be one sentence, practical, and specific. "
+        "Do not include headings or markdown."
+    )
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{settings.gemini_model}:generateContent?key={settings.gemini_api_key}"
+    )
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.2, "topP": 0.8, "maxOutputTokens": 220},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=12.0) as client:
+            response = await client.post(url, json=payload)
+            response.raise_for_status()
+        data = response.json()
+        text = (
+            data.get("candidates", [{}])[0]
+            .get("content", {})
+            .get("parts", [{}])[0]
+            .get("text", "")
+        )
+        if not text:
+            return []
+        lines: list[str] = []
+        for raw in text.splitlines():
+            cleaned = re.sub(r"^\s*([-*]|\d+[.)])\s*", "", raw).strip()
+            if cleaned:
+                lines.append(cleaned)
+        # De-duplicate while preserving order.
+        uniq: list[str] = []
+        for line in lines:
+            if line not in uniq:
+                uniq.append(line)
+        return uniq[:3]
+    except Exception:
+        return []
 
 
 async def check_and_extend_auction(rfq_id: str, rfq: dict, trigger_reason: str, *, trigger_type: str = "", bidder: str = ""):
-    """Extend close time only in-window; one concurrent extension wins (atomic update on current_close)."""
+    """Extend close time only in-window (relative to current_close_time); one concurrent extension wins (atomic update on current_close)."""
     fresh_rfq = await rfqs_collection.find_one({"_id": rfq["_id"]})
     if not fresh_rfq:
         return False
@@ -317,15 +380,29 @@ def _is_editable_window_open(rfq: dict, now: datetime, total_bids: int) -> bool:
 @router.post("/rfqs", response_model=dict)
 async def create_rfq(
     rfq: RFQCreate,
-    user: UserPrincipal = Depends(require_roles([UserRole.BUYER])),
+    user: UserPrincipal = Depends(require_roles([UserRole.RFQOWNER])),
 ):
     """Create a new RFQ with British Auction configuration."""
     # Validation
-    if rfq.bid_start_time >= rfq.bid_close_time:
+    now = datetime.now(timezone.utc)
+    bid_start = _ensure_tz(rfq.bid_start_time)
+    bid_close = _ensure_tz(rfq.bid_close_time)
+    forced_close = _ensure_tz(rfq.forced_close_time)
+    pickup_date = _ensure_tz(rfq.pickup_date)
+    if bid_start < now:
+        raise HTTPException(400, "Bid start date/time cannot be in the past")
+    if forced_close < now:
+        raise HTTPException(400, "Forced bid close date/time cannot be in the past")
+    if pickup_date < now:
+        raise HTTPException(400, "Pickup / service date/time cannot be in the past")
+    if bid_start >= bid_close:
         raise HTTPException(400, "Bid start time must be before bid close time")
-    if rfq.forced_close_time <= rfq.bid_close_time:
+    if forced_close <= bid_close:
         raise HTTPException(400, "Forced close time must be later than bid close time")
-    if rfq.pickup_date <= rfq.bid_start_time:
+    gap_minutes = int((forced_close - bid_close).total_seconds() // 60)
+    if rfq.extension_duration_minutes > gap_minutes:
+        raise HTTPException(400, "Extension duration cannot exceed the time between bid close and forced close")
+    if pickup_date <= bid_start:
         raise HTTPException(400, "Pickup date must be after bid start time")
     if rfq.starting_price <= 0:
         raise HTTPException(400, "Starting price must be greater than zero")
@@ -333,12 +410,12 @@ async def create_rfq(
         raise HTTPException(400, "Minimum decrement cannot be negative")
     if rfq.minimum_decrement >= rfq.starting_price:
         raise HTTPException(400, "Minimum decrement must be lower than starting price")
-    visibility_mode = _normalize_visibility_mode(rfq.supplier_visibility_mode)
-
+    bidder_visibility_mode = _normalize_visibility_mode(rfq.bidder_visibility_mode)
     ref_id = f"RFQ-{uuid.uuid4().hex[:8].upper()}"
 
     doc = {
         "name": rfq.name,
+        "created_by": user.username,
         "reference_id": ref_id,
         "material": rfq.material,
         "quantity": rfq.quantity,
@@ -353,6 +430,7 @@ async def create_rfq(
         "extension_duration_minutes": rfq.extension_duration_minutes,
         "extension_trigger": rfq.extension_trigger,
         "auction_type": rfq.auction_type,
+        "bidder_visibility_mode": bidder_visibility_mode,
         "starting_price": rfq.starting_price,
         "minimum_decrement": rfq.minimum_decrement,
         "technical_specs_attachment": rfq.technical_specs_attachment,
@@ -361,8 +439,7 @@ async def create_rfq(
         "technical_specs_content_type": rfq.technical_specs_content_type,
         "technical_specs_file_size_bytes": rfq.technical_specs_file_size_bytes,
         "loading_unloading_notes": rfq.loading_unloading_notes,
-        "supplier_visibility_mode": visibility_mode,
-        "awarded_supplier": None,
+        "awarded_bidder": None,
         "awarded_bid_id": None,
         "awarded_at": None,
         "award_note": None,
@@ -398,7 +475,8 @@ async def list_rfqs(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     status: str | None = None,
-    user: UserPrincipal = Depends(require_roles([UserRole.BUYER, UserRole.SUPPLIER])),
+    name: str | None = Query(default=None),
+    user: UserPrincipal = Depends(require_roles([UserRole.RFQOWNER, UserRole.BIDDER])),
 ):
     """List all RFQs with current status, lowest bid, and total bids (aggregated, read-only; no status writes on GET)."""
     if status == AuctionStatus.CLOSED:
@@ -407,6 +485,11 @@ async def list_rfqs(
         query = {"status": status}
     else:
         query = {}
+    if user.role == UserRole.RFQOWNER:
+        query["created_by"] = user.username
+    normalized_name = name if isinstance(name, str) else None
+    if normalized_name:
+        query["name"] = {"$regex": normalized_name, "$options": "i"}
     total, rows = await aggregate_list_rfqs(rfqs_collection, query, page, page_size)
     rfqs = []
     for raw in rows:
@@ -432,7 +515,7 @@ async def list_rfqs(
         username=user.username,
         role=user.role.value,
         resource_type="rfq",
-        metadata={"page": page, "page_size": page_size, "status": status},
+        metadata={"page": page, "page_size": page_size, "status": status, "name": normalized_name},
     )
     return _pagination_meta(rfqs, total, page, page_size)
 
@@ -440,7 +523,7 @@ async def list_rfqs(
 @router.get("/rfqs/{rfq_id}")
 async def get_rfq(
     rfq_id: str,
-    user: UserPrincipal = Depends(require_roles([UserRole.BUYER, UserRole.SUPPLIER])),
+    user: UserPrincipal = Depends(require_roles([UserRole.RFQOWNER, UserRole.BIDDER])),
 ):
     """Get detailed RFQ information (read-only: status from live clock, no writes on GET)."""
     try:
@@ -450,6 +533,7 @@ async def get_rfq(
     doc = await aggregate_rfq_by_id(rfqs_collection, oid)
     if not doc:
         raise HTTPException(404, "RFQ not found")
+    _ensure_owner_access(user, doc)
     total_bids, lowest_bid, l1 = bid_stats_from_aggregated_rfq(doc)
     st = compute_status(doc)
     winner_carrier, winning_bid_total = (None, None)
@@ -478,11 +562,12 @@ async def metrics_bids_per_rfq(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     search: str | None = None,
-    user: UserPrincipal = Depends(require_roles([UserRole.BUYER])),
+    user: UserPrincipal = Depends(require_roles([UserRole.RFQOWNER])),
 ):
+    owner = user.username if user.role == UserRole.RFQOWNER else None
     skip = (page - 1) * page_size
     rows, total = await pipeline_bids_per_rfq_metrics(
-        skip, page_size, name_search=search
+        skip, page_size, name_search=search, created_by=owner
     )
     for row in rows:
         row["status"] = str(row.get("status", "")) if row.get("status") is not None else ""
@@ -505,9 +590,10 @@ async def metrics_bids_per_rfq(
 @router.get("/metrics/avg-bids")
 async def metrics_avg_bids(
     period: str = Query("day", pattern="^(day|week|month)$"),
-    user: UserPrincipal = Depends(require_roles([UserRole.BUYER])),
+    user: UserPrincipal = Depends(require_roles([UserRole.RFQOWNER])),
 ):
-    items = await pipeline_avg_bids(period)
+    owner = user.username if user.role == UserRole.RFQOWNER else None
+    items = await pipeline_avg_bids(period, created_by=owner)
     for row in items:
         if "avg_bids" in row and row["avg_bids"] is not None and not isinstance(row["avg_bids"], (int, float)):
             try:
@@ -527,9 +613,10 @@ async def metrics_avg_bids(
 @router.get("/metrics/winning-price-trend")
 async def metrics_winning_price_trend(
     period: str = Query("day", pattern="^(day|week|month)$"),
-    user: UserPrincipal = Depends(require_roles([UserRole.BUYER])),
+    user: UserPrincipal = Depends(require_roles([UserRole.RFQOWNER])),
 ):
-    raw = await pipeline_winning_price_trend(period)
+    owner = user.username if user.role == UserRole.RFQOWNER else None
+    raw = await pipeline_winning_price_trend(period, created_by=owner)
     items = []
     for row in raw:
         items.append(
@@ -556,10 +643,11 @@ async def metrics_extensions_per_rfq(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     search: str | None = None,
-    user: UserPrincipal = Depends(require_roles([UserRole.BUYER])),
+    user: UserPrincipal = Depends(require_roles([UserRole.RFQOWNER])),
 ):
+    owner = user.username if user.role == UserRole.RFQOWNER else None
     skip = (page - 1) * page_size
-    items, total = await pipeline_extensions_per_rfq(skip, page_size, name_search=search)
+    items, total = await pipeline_extensions_per_rfq(skip, page_size, name_search=search, created_by=owner)
     await log_audit(
         action="metrics_extensions_per_rfq_viewed",
         username=user.username,
@@ -579,9 +667,10 @@ async def metrics_extensions_per_rfq(
 @router.get("/metrics/extension-impact")
 async def metrics_extension_impact(
     period: str = Query("day", pattern="^(day|week|month)$"),
-    user: UserPrincipal = Depends(require_roles([UserRole.BUYER])),
+    user: UserPrincipal = Depends(require_roles([UserRole.RFQOWNER])),
 ):
-    items, rows = await pipeline_extension_impact(period)
+    owner = user.username if user.role == UserRole.RFQOWNER else None
+    items, rows = await pipeline_extension_impact(period, created_by=owner)
     await log_audit(
         action="metrics_extension_impact_viewed",
         username=user.username,
@@ -595,7 +684,7 @@ async def metrics_extension_impact(
 @router.delete("/rfqs/{rfq_id}")
 async def delete_rfq(
     rfq_id: str,
-    user: UserPrincipal = Depends(require_roles([UserRole.BUYER])),
+    user: UserPrincipal = Depends(require_roles([UserRole.RFQOWNER])),
 ):
     """Delete an RFQ and all its associated bids and activity logs."""
     try:
@@ -605,6 +694,7 @@ async def delete_rfq(
 
     if not rfq:
         raise HTTPException(404, "RFQ not found")
+    _ensure_owner_access(user, rfq)
 
     # Delete all associated data
     await bids_collection.delete_many({"rfq_id": rfq_id})
@@ -621,57 +711,11 @@ async def delete_rfq(
     return {"message": f"RFQ '{rfq['name']}' and all associated data deleted successfully"}
 
 
-@router.post("/rfqs/{rfq_id}/clone", response_model=dict)
-async def clone_rfq(
-    rfq_id: str,
-    user: UserPrincipal = Depends(require_roles([UserRole.BUYER])),
-):
-    try:
-        src = await rfqs_collection.find_one({"_id": ObjectId(rfq_id)})
-    except Exception:
-        raise HTTPException(400, "Invalid RFQ ID")
-    if not src:
-        raise HTTPException(404, "RFQ not found")
-    new_ref = f"RFQ-{uuid.uuid4().hex[:8].upper()}"
-    new_doc = {k: v for k, v in src.items() if k != "_id"}
-    new_doc["reference_id"] = new_ref
-    new_doc["name"] = f"{src.get('name', 'RFQ').strip()} (Copy)"
-    new_doc["status"] = AuctionStatus.UPCOMING
-    new_doc["is_paused"] = False
-    new_doc["awarded_supplier"] = None
-    new_doc["awarded_bid_id"] = None
-    new_doc["awarded_at"] = None
-    new_doc["award_note"] = None
-    new_doc["current_close_time"] = new_doc.get("bid_close_time", src.get("bid_close_time"))
-    new_doc["created_at"] = datetime.now(timezone.utc)
-    ins = await rfqs_collection.insert_one(new_doc)
-    inserted = await rfqs_collection.find_one({"_id": ins.inserted_id})
-    if inserted:
-        await _update_status_with_logging(inserted)
-    nid = str(ins.inserted_id)
-    await log_activity(
-        nid,
-        "rfq_created",
-        f"RFQ '{new_doc.get('name')}' ({new_ref}) cloned from {src.get('reference_id')}.",
-    )
-    await log_audit(
-        action="rfq_cloned",
-        username=user.username,
-        role=user.role.value,
-        resource_type="rfq",
-        resource_id=nid,
-        metadata={"source_id": rfq_id},
-    )
-    fresh = await rfqs_collection.find_one({"_id": ins.inserted_id})
-    st = compute_status(fresh) if fresh else AuctionStatus.UPCOMING
-    return serialize_rfq(fresh, None, 0, None, None, status_override=st)
-
-
 @router.patch("/rfqs/{rfq_id}", response_model=dict)
 async def update_rfq(
     rfq_id: str,
     updates: RFQUpdate,
-    user: UserPrincipal = Depends(require_roles([UserRole.BUYER])),
+    user: UserPrincipal = Depends(require_roles([UserRole.RFQOWNER])),
 ):
     """Update RFQ details before bidding starts / allowed edit window."""
     try:
@@ -680,11 +724,10 @@ async def update_rfq(
         raise HTTPException(400, "Invalid RFQ ID")
     if not rfq:
         raise HTTPException(404, "RFQ not found")
-
-    total_bids = await bids_collection.count_documents({"rfq_id": rfq_id})
-    now = datetime.now(timezone.utc)
-    if not _is_editable_window_open(rfq, now, total_bids):
-        raise HTTPException(400, "RFQ can only be edited before bidding starts or within 15 minutes of creation, and only when no bids exist")
+    _ensure_owner_access(user, rfq)
+    current_status = compute_status(rfq)
+    if current_status in [AuctionStatus.CLOSED, AuctionStatus.FORCE_CLOSED]:
+        raise HTTPException(400, "RFQ cannot be edited after auction is over")
 
     payload = updates.model_dump(exclude_none=True)
     if not payload:
@@ -699,6 +742,9 @@ async def update_rfq(
         raise HTTPException(400, "Bid start time must be before bid close time")
     if forced_close <= bid_close:
         raise HTTPException(400, "Forced close time must be later than bid close time")
+    gap_minutes = int((forced_close - bid_close).total_seconds() // 60)
+    if int(merged.get("extension_duration_minutes", 0) or 0) > gap_minutes:
+        raise HTTPException(400, "Extension duration cannot exceed the time between bid close and forced close")
     if pickup_date <= bid_start:
         raise HTTPException(400, "Pickup date must be after bid start time")
     if float(merged.get("starting_price", 0) or 0) <= 0:
@@ -707,16 +753,15 @@ async def update_rfq(
         raise HTTPException(400, "Minimum decrement cannot be negative")
     if float(merged.get("minimum_decrement", 0) or 0) >= float(merged.get("starting_price", 0) or 0):
         raise HTTPException(400, "Minimum decrement must be lower than starting price")
-    if "supplier_visibility_mode" in payload:
-        payload["supplier_visibility_mode"] = _normalize_visibility_mode(payload["supplier_visibility_mode"])
-
+    if "bidder_visibility_mode" in payload:
+        payload["bidder_visibility_mode"] = _normalize_visibility_mode(payload.get("bidder_visibility_mode"))
     await rfqs_collection.update_one({"_id": rfq["_id"]}, {"$set": payload})
     updated = await rfqs_collection.find_one({"_id": rfq["_id"]})
     await _update_status_with_logging(updated)
     await log_activity(
         rfq_id,
         "rfq_updated",
-        f"RFQ configuration updated by buyer. Updated fields: {', '.join(sorted(payload.keys()))}",
+        f"RFQ configuration updated by rfqowner. Updated fields: {', '.join(sorted(payload.keys()))}",
         {"updated_fields": sorted(payload.keys())},
     )
     await log_audit(
@@ -736,7 +781,7 @@ async def update_rfq(
 @router.post("/rfqs/{rfq_id}/pause", response_model=dict)
 async def pause_rfq(
     rfq_id: str,
-    user: UserPrincipal = Depends(require_roles([UserRole.BUYER])),
+    user: UserPrincipal = Depends(require_roles([UserRole.RFQOWNER])),
 ):
     """Pause auction before bidding starts / allowed edit window."""
     try:
@@ -745,6 +790,10 @@ async def pause_rfq(
         raise HTTPException(400, "Invalid RFQ ID")
     if not rfq:
         raise HTTPException(404, "RFQ not found")
+    _ensure_owner_access(user, rfq)
+    current_status = compute_status(rfq)
+    if current_status in [AuctionStatus.CLOSED, AuctionStatus.FORCE_CLOSED]:
+        raise HTTPException(400, "RFQ cannot be paused after auction is over")
 
     total_bids = await bids_collection.count_documents({"rfq_id": rfq_id})
     now = datetime.now(timezone.utc)
@@ -753,7 +802,7 @@ async def pause_rfq(
 
     await rfqs_collection.update_one({"_id": rfq["_id"]}, {"$set": {"is_paused": True, "status": AuctionStatus.PAUSED}})
     paused = await rfqs_collection.find_one({"_id": rfq["_id"]})
-    await log_activity(rfq_id, "auction_paused", "Auction paused by buyer before bidding start window.")
+    await log_activity(rfq_id, "auction_paused", "Auction paused by rfqowner before bidding start window.")
     await log_audit(
         action="rfq_paused",
         username=user.username,
@@ -770,7 +819,7 @@ async def pause_rfq(
 async def award_rfq(
     rfq_id: str,
     payload: AwardRequest,
-    user: UserPrincipal = Depends(require_roles([UserRole.BUYER])),
+    user: UserPrincipal = Depends(require_roles([UserRole.RFQOWNER])),
 ):
     try:
         rfq = await rfqs_collection.find_one({"_id": ObjectId(rfq_id)})
@@ -778,6 +827,7 @@ async def award_rfq(
         raise HTTPException(400, "Invalid RFQ ID")
     if not rfq:
         raise HTTPException(404, "RFQ not found")
+    _ensure_owner_access(user, rfq)
 
     await _update_status_with_logging(rfq)
     if rfq.get("status") not in [AuctionStatus.CLOSED, AuctionStatus.FORCE_CLOSED]:
@@ -799,7 +849,7 @@ async def award_rfq(
         {"_id": rfq["_id"], "awarded_bid_id": None},
         {
             "$set": {
-                "awarded_supplier": bid.get("carrier_name"),
+                "awarded_bidder": bid.get("carrier_name"),
                 "awarded_bid_id": payload.bid_id,
                 "awarded_at": awarded_at,
                 "award_note": payload.award_note,
@@ -813,9 +863,9 @@ async def award_rfq(
     await log_activity(
         rfq_id,
         "award_winner",
-        f"Buyer awarded winner {bid.get('carrier_display_name') or bid.get('carrier_name')} at ₹{float(bid.get('total_price', 0)):,.2f}",
+        f"rfqowner awarded winner {bid.get('carrier_display_name') or bid.get('carrier_name')} at ₹{float(bid.get('total_price', 0)):,.2f}",
         {
-            "awarded_supplier": bid.get("carrier_name"),
+            "awarded_bidder": bid.get("carrier_name"),
             "awarded_bid_id": payload.bid_id,
             "awarded_at": awarded_at.isoformat(),
             "award_note": payload.award_note,
@@ -843,7 +893,7 @@ async def submit_bid(
     rfq_id: str,
     bid: BidCreate,
     request: Request,
-    user: UserPrincipal = Depends(require_roles([UserRole.SUPPLIER])),
+    user: UserPrincipal = Depends(require_roles([UserRole.BIDDER])),
 ):
     """Submit a bid for an RFQ. Handles auction extension logic.
     
@@ -895,7 +945,7 @@ async def submit_bid(
         required_max = round(float(old_l1["total_price"]) - minimum_decrement, 2)
         if required_max <= 0:
             _error(
-                "Minimum decrement is too high for the current lowest bid. Buyer must reduce minimum decrement.",
+                "Minimum decrement is too high for the current lowest bid. rfqowner must reduce minimum decrement.",
                 code="minimum_decrement_blocks_bidding",
             )
         if total_price > required_max:
@@ -963,7 +1013,7 @@ async def submit_bid(
                     await tx_session.end_session()
             break
         except DuplicateKeyError:
-            # Another request inserted same supplier bid concurrently; retry as update path.
+            # Another request inserted same bidder bid concurrently; retry as update path.
             continue
     if bid_id is None:
         _error("Unable to submit bid due to concurrent updates. Please retry.", code="bid_concurrency_conflict", status_code=409)
@@ -974,17 +1024,17 @@ async def submit_bid(
             rfq_id,
             "bid_submitted",
             f"{carrier_display_name} revised bid: ₹{total_price:,.2f} (was ₹{old_total:,.2f}). Freight: ₹{bid.freight_charges:,.2f}, Origin: ₹{bid.origin_charges:,.2f}, Dest: ₹{bid.destination_charges:,.2f}, Vehicle: {bid.vehicle_type or 'N/A'}, Capacity: {bid.capacity_tons:g} tons, Insurance: {'Yes' if bid.insurance_included else 'No'}",
-            {"carrier": carrier_display_name, "supplier_username": canonical_carrier, "total_price": total_price, "old_total": old_total, "is_revision": True}
+            {"carrier": carrier_display_name, "bidder_username": canonical_carrier, "total_price": total_price, "old_total": old_total, "is_revision": True}
         )
     else:
         await log_activity(
             rfq_id,
             "bid_submitted",
             f"{carrier_display_name} submitted bid: ₹{total_price:,.2f} (Freight: ₹{bid.freight_charges:,.2f}, Origin: ₹{bid.origin_charges:,.2f}, Dest: ₹{bid.destination_charges:,.2f}, Vehicle: {bid.vehicle_type or 'N/A'}, Capacity: {bid.capacity_tons:g} tons, Insurance: {'Yes' if bid.insurance_included else 'No'})",
-            {"carrier": carrier_display_name, "supplier_username": canonical_carrier, "total_price": total_price}
+            {"carrier": carrier_display_name, "bidder_username": canonical_carrier, "total_price": total_price}
         )
 
-    # Immutable bid revision for buyer timeline
+    # Immutable bid revision for rfqowner timeline
     await bid_revisions_collection.insert_one(
         {
             "rfq_id": rfq_id,
@@ -1016,7 +1066,7 @@ async def submit_bid(
                 await check_and_extend_auction(
                     rfq_id,
                     rfq,
-                    f"Supplier rank changed after bid from {carrier_display_name}",
+                    f"Bidder rank changed after bid from {carrier_display_name}",
                     trigger_type="rank_change",
                     bidder=canonical_carrier,
                 )
@@ -1042,7 +1092,7 @@ async def submit_bid(
             "type": "bid_updated",
             "rfq_id": rfq_id,
             "carrier_name": carrier_display_name,
-            "supplier_username": canonical_carrier,
+            "bidder_username": canonical_carrier,
             "total_price": bid_doc["total_price"],
             "rank": bid_doc["rank"],
         },
@@ -1053,7 +1103,7 @@ async def submit_bid(
         role=user.role.value,
         resource_type="bid",
         resource_id=str(bid_id),
-        metadata={"rfq_id": rfq_id, "carrier_name": carrier_display_name, "supplier_username": canonical_carrier},
+        metadata={"rfq_id": rfq_id, "carrier_name": carrier_display_name, "bidder_username": canonical_carrier},
         request_id=request.headers.get("x-request-id", ""),
     )
     return serialize_bid(bid_doc)
@@ -1064,7 +1114,7 @@ async def get_bids(
     rfq_id: str,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    user: UserPrincipal = Depends(require_roles([UserRole.BUYER, UserRole.SUPPLIER])),
+    user: UserPrincipal = Depends(require_roles([UserRole.RFQOWNER, UserRole.BIDDER])),
 ):
     """Get all bids for an RFQ sorted by rank (price ascending)."""
     try:
@@ -1074,6 +1124,14 @@ async def get_bids(
 
     if not rfq:
         raise HTTPException(404, "RFQ not found")
+    _ensure_owner_access(user, rfq)
+
+    visibility_mode = _normalize_visibility_mode(rfq.get("bidder_visibility_mode"))
+    alias_map: dict[str, str] = {}
+    if user.role == UserRole.RFQOWNER and visibility_mode == "masked_competitor":
+        carriers = await bids_collection.distinct("carrier_name", {"rfq_id": rfq_id})
+        ordered = sorted([c for c in carriers if isinstance(c, str)])
+        alias_map = {carrier: f"Bidder {idx + 1}" for idx, carrier in enumerate(ordered)}
 
     bids = []
     query = {"rfq_id": rfq_id}
@@ -1083,8 +1141,11 @@ async def get_bids(
     ).skip((page - 1) * page_size).limit(page_size)
     async for doc in cursor:
         row = serialize_bid(doc)
-        visibility_mode = rfq.get("supplier_visibility_mode", "full_rank")
-        if user.role == UserRole.SUPPLIER and visibility_mode == "masked_competitor":
+        if user.role == UserRole.RFQOWNER and visibility_mode == "masked_competitor":
+            alias = alias_map.get(doc.get("carrier_name", ""), "Bidder")
+            row["carrier_name"] = alias
+            row["carrier_account_name"] = alias
+        elif user.role == UserRole.BIDDER:
             is_self = doc.get("carrier_name") == user.username
             if not is_self:
                 row["carrier_name"] = "Competitor"
@@ -1113,7 +1174,7 @@ async def get_bids(
 async def export_bids(
     rfq_id: str,
     format: str = Query("csv", pattern="^(csv)$"),
-    user: UserPrincipal = Depends(require_roles([UserRole.BUYER])),
+    user: UserPrincipal = Depends(require_roles([UserRole.RFQOWNER])),
 ):
     try:
         rfq = await rfqs_collection.find_one({"_id": ObjectId(rfq_id)})
@@ -1121,6 +1182,14 @@ async def export_bids(
         raise HTTPException(400, "Invalid RFQ ID")
     if not rfq:
         raise HTTPException(404, "RFQ not found")
+    _ensure_owner_access(user, rfq)
+
+    visibility_mode = _normalize_visibility_mode(rfq.get("bidder_visibility_mode"))
+    alias_map: dict[str, str] = {}
+    if user.role == UserRole.RFQOWNER and visibility_mode == "masked_competitor":
+        carriers = await bids_collection.distinct("carrier_name", {"rfq_id": rfq_id})
+        ordered = sorted([c for c in carriers if isinstance(c, str)])
+        alias_map = {carrier: f"Bidder {idx + 1}" for idx, carrier in enumerate(ordered)}
 
     rows: list[dict] = []
     async for doc in bids_collection.find({"rfq_id": rfq_id}).sort(
@@ -1133,7 +1202,7 @@ async def export_bids(
     writer.writerow(
         [
             "rank",
-            "supplier_username",
+            "bidder_username",
             "display_name",
             "total_price",
             "freight",
@@ -1145,11 +1214,17 @@ async def export_bids(
         ]
     )
     for doc in rows:
+        display_name = (doc.get("carrier_display_name") or "").strip() or doc.get("carrier_name", "")
+        bidder_username = doc.get("carrier_name", "")
+        if user.role == UserRole.RFQOWNER and visibility_mode == "masked_competitor":
+            alias = alias_map.get(doc.get("carrier_name", ""), "Bidder")
+            bidder_username = alias
+            display_name = alias
         writer.writerow(
             [
                 doc.get("rank", ""),
-                doc.get("carrier_name", ""),
-                (doc.get("carrier_display_name") or "").strip() or doc.get("carrier_name", ""),
+                bidder_username,
+                display_name,
                 doc.get("total_price", ""),
                 doc.get("freight_charges", ""),
                 doc.get("origin_charges", ""),
@@ -1178,7 +1253,7 @@ async def export_bids(
 @router.get("/rfqs/{rfq_id}/bid-revisions")
 async def list_bid_revisions(
     rfq_id: str,
-    user: UserPrincipal = Depends(require_roles([UserRole.BUYER, UserRole.SUPPLIER])),
+    user: UserPrincipal = Depends(require_roles([UserRole.RFQOWNER, UserRole.BIDDER])),
 ):
     try:
         oid = ObjectId(rfq_id)
@@ -1187,9 +1262,10 @@ async def list_bid_revisions(
     doc = await rfqs_collection.find_one({"_id": oid})
     if not doc:
         raise HTTPException(404, "RFQ not found")
+    _ensure_owner_access(user, doc)
 
     q: dict = {"rfq_id": rfq_id}
-    if user.role == UserRole.SUPPLIER:
+    if user.role == UserRole.BIDDER:
         q["carrier_name"] = user.username
     items: list[dict] = []
     async for r in bid_revisions_collection.find(q).sort("created_at", 1):
@@ -1208,9 +1284,9 @@ async def list_bid_revisions(
     return {"items": items}
 
 
-@router.get("/supplier/my-auctions")
-async def my_supplier_auctions(
-    user: UserPrincipal = Depends(require_roles([UserRole.SUPPLIER])),
+@router.get("/bidder/my-auctions")
+async def my_bidder_auctions(
+    user: UserPrincipal = Depends(require_roles([UserRole.BIDDER])),
 ):
     uname = user.username
     rows = await bids_collection.aggregate(
@@ -1275,6 +1351,29 @@ async def my_supplier_auctions(
     return {"items": out}
 
 
+@router.post("/dashboard/recommendations")
+async def dashboard_recommendations(
+    payload: DashboardRecommendationRequest,
+    user: UserPrincipal = Depends(require_roles([UserRole.RFQOWNER, UserRole.BIDDER])),
+):
+    role = user.role.value
+    ai_items = await _gemini_recommendations(role=role, summary=payload.summary or {})
+    source = "ai" if ai_items else "fallback"
+    if role == UserRole.RFQOWNER.value:
+        fallback = [
+            "Prioritize active auctions with zero bids and contact shortlisted bidders.",
+            "Review auctions closing within one hour to avoid last-minute outcomes.",
+            "Track highly competitive RFQs and align decrement strategy for better price discovery.",
+        ]
+    else:
+        fallback = [
+            "Focus on active auctions closing within one hour where your rank is outside top-3.",
+            "Improve bid step-down strategy on lanes where you repeatedly miss top-3.",
+            "Protect current L1 positions by monitoring close-time competitive pressure.",
+        ]
+    return {"source": source, "items": ai_items or fallback}
+
+
 # ─── Activity Log Routes ───
 
 @router.get("/rfqs/{rfq_id}/activity")
@@ -1283,7 +1382,7 @@ async def get_activity(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     event_type: str | None = None,
-    user: UserPrincipal = Depends(require_roles([UserRole.BUYER, UserRole.SUPPLIER])),
+    user: UserPrincipal = Depends(require_roles([UserRole.RFQOWNER, UserRole.BIDDER])),
 ):
     """Get activity log for an RFQ."""
     try:
@@ -1293,6 +1392,7 @@ async def get_activity(
 
     if not rfq:
         raise HTTPException(404, "RFQ not found")
+    _ensure_owner_access(user, rfq)
 
     logs = []
     query: dict = {"rfq_id": rfq_id}
@@ -1317,7 +1417,7 @@ async def get_activity(
 async def export_activity(
     rfq_id: str,
     format: str = Query("csv", pattern="^(csv)$"),
-    user: UserPrincipal = Depends(require_roles([UserRole.BUYER, UserRole.SUPPLIER])),
+    user: UserPrincipal = Depends(require_roles([UserRole.RFQOWNER, UserRole.BIDDER])),
 ):
     try:
         rfq = await rfqs_collection.find_one({"_id": ObjectId(rfq_id)})
@@ -1325,6 +1425,7 @@ async def export_activity(
         raise HTTPException(400, "Invalid RFQ ID")
     if not rfq:
         raise HTTPException(404, "RFQ not found")
+    _ensure_owner_access(user, rfq)
 
     logs = []
     async for doc in activity_logs_collection.find({"rfq_id": rfq_id}).sort("created_at", 1):

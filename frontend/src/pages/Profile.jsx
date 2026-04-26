@@ -3,11 +3,16 @@ import {
   Alert,
   Avatar,
   Box,
+  Button,
   Card,
   CardContent,
   Chip,
   Grid,
+  MenuItem,
+  Switch,
   Stack,
+  TextField,
+  FormControlLabel,
   Typography,
 } from "@mui/material";
 import { alpha, useTheme } from "@mui/material/styles";
@@ -15,23 +20,40 @@ import PersonOutlineOutlinedIcon from "@mui/icons-material/PersonOutlineOutlined
 import VerifiedUserOutlinedIcon from "@mui/icons-material/VerifiedUserOutlined";
 import MailOutlineOutlinedIcon from "@mui/icons-material/MailOutlineOutlined";
 import CalendarMonthOutlinedIcon from "@mui/icons-material/CalendarMonthOutlined";
-import { getProfile } from "../api";
+import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
+import { getProfile, getProfileSettings, updateProfileSettings } from "../api";
 import { parseApiError } from "../utils/errorHandling";
-
-function formatDate(dateStr) {
-  return new Date(dateStr).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
-}
+import { formatDate, saveUserSettings } from "../utils/auctionFormatters";
 
 export default function Profile() {
   const theme = useTheme();
   const [profile, setProfile] = useState(null);
+  const [settings, setSettings] = useState({
+    email_notifications: true,
+    timezone: "Asia/Kolkata",
+    default_rfq_page_size: 20,
+    use_24h_time: false,
+    date_format: "medium",
+    auto_refresh_seconds: 10,
+  });
+  const [saving, setSaving] = useState(false);
+  const [savedMessage, setSavedMessage] = useState("");
   const [error, setError] = useState("");
 
   useEffect(() => {
     async function loadProfile() {
       try {
-        const res = await getProfile();
-        setProfile(res.data);
+        const [profileRes, settingsRes] = await Promise.all([getProfile(), getProfileSettings()]);
+        setProfile(profileRes.data);
+        setSettings({
+          email_notifications: Boolean(settingsRes.data?.email_notifications ?? true),
+          timezone: settingsRes.data?.timezone || "Asia/Kolkata",
+          default_rfq_page_size: Number(settingsRes.data?.default_rfq_page_size ?? 20),
+          use_24h_time: Boolean(settingsRes.data?.use_24h_time ?? false),
+          date_format: settingsRes.data?.date_format || "medium",
+          auto_refresh_seconds: Number(settingsRes.data?.auto_refresh_seconds ?? 10),
+        });
+        saveUserSettings(settingsRes.data || {});
       } catch (err) {
         setError(parseApiError(err, "Failed to load profile"));
       }
@@ -42,12 +64,43 @@ export default function Profile() {
   if (error) return <Alert severity="error">{error}</Alert>;
   if (!profile) return <Typography>Loading profile...</Typography>;
 
-  const roleColor = profile.role === "buyer" ? "primary" : "secondary";
-  const roleLabel = profile.role === "buyer" ? "Buyer" : "Supplier";
+  const roleColor = profile.role === "rfqowner" ? "primary" : "secondary";
+  const roleLabel = profile.role === "rfqowner" ? "RFQ Owner" : "Bidder";
   const isDark = theme.palette.mode === "dark";
   const profileHeroText = isDark ? "#000000" : "#FFFFFF";
   const profileHeroAvatarBg = isDark ? "rgba(0,0,0,0.14)" : "rgba(255,255,255,0.2)";
   const profileHeroChipBg = isDark ? "rgba(0,0,0,0.16)" : "rgba(255,255,255,0.22)";
+
+  async function handleSaveSettings() {
+    setSaving(true);
+    setSavedMessage("");
+    setError("");
+    try {
+      const payload = {
+        email_notifications: Boolean(settings.email_notifications),
+        timezone: String(settings.timezone || "").trim(),
+        default_rfq_page_size: Number(settings.default_rfq_page_size),
+        use_24h_time: Boolean(settings.use_24h_time),
+        date_format: String(settings.date_format || "medium"),
+        auto_refresh_seconds: Number(settings.auto_refresh_seconds),
+      };
+      const res = await updateProfileSettings(payload);
+      setSettings({
+        email_notifications: Boolean(res.data?.email_notifications ?? true),
+        timezone: res.data?.timezone || "Asia/Kolkata",
+        default_rfq_page_size: Number(res.data?.default_rfq_page_size ?? 20),
+        use_24h_time: Boolean(res.data?.use_24h_time ?? false),
+        date_format: res.data?.date_format || "medium",
+        auto_refresh_seconds: Number(res.data?.auto_refresh_seconds ?? 10),
+      });
+      saveUserSettings(res.data || {});
+      setSavedMessage("Settings saved successfully.");
+    } catch (err) {
+      setError(parseApiError(err, "Failed to update settings"));
+    } finally {
+      setSaving(false);
+    }
+  }
 
   return (
     <Stack spacing={2.5}>
@@ -126,6 +179,115 @@ export default function Profile() {
                 <Typography variant="subtitle2" color="text.secondary">Member Since</Typography>
               </Stack>
               <Typography variant="h6">{formatDate(profile.created_at)}</Typography>
+            </CardContent>
+          </Card>
+        </Grid>
+        <Grid size={{ xs: 12 }}>
+          <Card>
+            <CardContent>
+              <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 2 }}>
+                <SettingsOutlinedIcon color="primary" />
+                <Typography variant="h6">Settings</Typography>
+              </Stack>
+              {savedMessage && <Alert severity="success" sx={{ mb: 2 }}>{savedMessage}</Alert>}
+              <Grid container spacing={2}>
+                <Grid size={{ xs: 12, md: 4 }}>
+                  <FormControlLabel
+                    control={
+                      <Switch
+                        checked={settings.email_notifications}
+                        onChange={(e) =>
+                          setSettings((prev) => ({ ...prev, email_notifications: e.target.checked }))
+                        }
+                      />
+                    }
+                    label="Email notifications"
+                  />
+                </Grid>
+                <Grid size={{ xs: 12, md: 4 }}>
+                  <TextField
+                    select
+                    fullWidth
+                    label="Preferred timezone"
+                    value={settings.timezone}
+                    onChange={(e) => setSettings((prev) => ({ ...prev, timezone: e.target.value }))}
+                  >
+                    <MenuItem value="Asia/Kolkata">Asia/Kolkata (IST)</MenuItem>
+                    <MenuItem value="UTC">UTC</MenuItem>
+                    <MenuItem value="Asia/Dubai">Asia/Dubai (GST)</MenuItem>
+                    <MenuItem value="Europe/London">Europe/London (GMT/BST)</MenuItem>
+                    <MenuItem value="America/New_York">America/New_York (ET)</MenuItem>
+                  </TextField>
+                </Grid>
+                <Grid size={{ xs: 12, md: 4 }}>
+                  <TextField
+                    fullWidth
+                    type="number"
+                    label="Default RFQ page size"
+                    value={settings.default_rfq_page_size}
+                    onChange={(e) =>
+                      setSettings((prev) => ({
+                        ...prev,
+                        default_rfq_page_size: Number(e.target.value),
+                      }))
+                    }
+                    inputProps={{ min: 5, max: 100 }}
+                    helperText="Allowed range: 5 to 100"
+                  />
+                </Grid>
+                <Grid size={{ xs: 12, md: 4 }}>
+                  <FormControlLabel
+                    control={
+                      <Switch
+                        checked={settings.use_24h_time}
+                        onChange={(e) =>
+                          setSettings((prev) => ({ ...prev, use_24h_time: e.target.checked }))
+                        }
+                      />
+                    }
+                    label="Use 24-hour time"
+                  />
+                </Grid>
+                <Grid size={{ xs: 12, md: 4 }}>
+                  <TextField
+                    select
+                    fullWidth
+                    label="Date format"
+                    value={settings.date_format}
+                    onChange={(e) => setSettings((prev) => ({ ...prev, date_format: e.target.value }))}
+                  >
+                    <MenuItem value="short">Short</MenuItem>
+                    <MenuItem value="medium">Medium</MenuItem>
+                    <MenuItem value="long">Long</MenuItem>
+                  </TextField>
+                </Grid>
+                <Grid size={{ xs: 12, md: 4 }}>
+                  <TextField
+                    fullWidth
+                    type="number"
+                    label="Auto refresh (seconds)"
+                    value={settings.auto_refresh_seconds}
+                    onChange={(e) =>
+                      setSettings((prev) => ({
+                        ...prev,
+                        auto_refresh_seconds: Number(e.target.value),
+                      }))
+                    }
+                    inputProps={{ min: 5, max: 120 }}
+                    helperText="Used in auction list auto-refresh"
+                  />
+                </Grid>
+                <Grid size={{ xs: 12 }}>
+                  <Typography variant="body2" color="text.secondary">
+                    Preview time in selected timezone: {formatDate(new Date().toISOString())}
+                  </Typography>
+                </Grid>
+              </Grid>
+              <Stack direction="row" justifyContent="flex-end" sx={{ mt: 2 }}>
+                <Button variant="contained" onClick={handleSaveSettings} disabled={saving}>
+                  {saving ? "Saving..." : "Save settings"}
+                </Button>
+              </Stack>
             </CardContent>
           </Card>
         </Grid>

@@ -1,79 +1,121 @@
 # BidForge - British Auction RFQ System
 
-BidForge is a full-stack RFQ platform with British Auction-style bidding, built with FastAPI, MongoDB, and React.
+BidForge is a full-stack RFQ and reverse-auction platform for logistics procurement. It provides role-based workflows for `rfqowner` and `bidder` users, real-time bidding, auto-extension logic, winner award, analytics, and operational auditability.
 
-## Features
+## What BidForge Supports
 
-- Buyer and supplier authentication with JWT.
-- RFQ creation with auction rules (`trigger_window_minutes`, `extension_duration_minutes`, `extension_trigger`, forced close).
-- Dynamic auction status transitions (`upcoming`, `active`, `paused`, `closed`, `force_closed`).
-- Bid submission and revision with rank recalculation.
-- Time-extension logic with three trigger types: `bid_received`, `rank_change`, and `l1_change`.
-- Activity timeline and buyer-only analytics.
-- WebSocket updates for live bid/rank changes.
-- Basic security hardening: CORS config, rate limiting, audit logs, request ID propagation.
+- Authentication and authorization (`rfqowner`, `bidder`) using JWT bearer tokens.
+- RFQ creation with rich auction configuration:
+  - Time windows (`bid_start_time`, `bid_close_time`, `forced_close_time`)
+  - Extension strategy (`trigger_window_minutes`, `extension_duration_minutes`, `extension_trigger`)
+  - Pricing guards (`starting_price`, `minimum_decrement`)
+  - Visibility mode (`full_rank`, `masked_competitor`)
+- Bidding with one active bid per bidder per RFQ (revisions overwrite active row and also create immutable revision history).
+- Deterministic rank calculation by lowest total bid, tie-broken by earliest timestamp.
+- Auto-extension for British-style auctions only.
+- Real-time updates over WebSocket (`status_changed`, `bid_updated`, `time_extended`).
+- Activity timeline and CSV exports (bids and activity).
+- RFQ award workflow after close/force-close.
+- Metrics dashboards and optional AI recommendations.
 
 ## Tech Stack
 
-- Backend: FastAPI, Motor (async MongoDB driver), Pydantic, python-jose.
-- Frontend: React + Vite.
-- Database: MongoDB.
+### Backend
 
-## Project Structure
+- FastAPI
+- Motor (MongoDB async driver)
+- Pydantic
+- python-jose (JWT)
+- passlib + PBKDF2/bcrypt compatibility
+- httpx
 
-- `backend/` - API, auth, auction rules, scheduler, tests.
-- `frontend/` - React app for buyer/supplier workflows.
+### Frontend
 
-## Homepage, Logo, and Diagrams
+- React
+- Vite
+- MUI
+- React Router
+- Recharts
+- Axios
 
-- Public home page is available at `http://localhost:5173/`.
-- Login action is available on the home page using the **Login** button.
-- App logo file: `frontend/src/assets/bidforge-logo.svg`.
-- Diagram files:
-  - `frontend/src/assets/diagram-system.svg`
-  - `frontend/src/assets/diagram-flow.svg`
+### Data
+
+- MongoDB
+
+## Repository Layout
+
+- `backend/`
+  - API (`main.py`, `routes.py`, `auth_routes.py`)
+  - auth/security (`auth.py`, `rate_limit.py`, `audit.py`)
+  - background status scheduler (`scheduler.py`)
+  - data access and indexes (`database.py`)
+  - metrics pipelines (`metrics_pipeline.py`)
+  - tests and seed scripts
+- `frontend/`
+  - app shell and routes (`src/App.jsx`)
+  - pages for dashboard, auctions, create RFQ, detail, metrics, profile, auth
+  - API client (`src/api.js`)
+  - assets and diagrams
+
+## Local Setup
 
 ## Prerequisites
 
-- Python 3.9+
-- Node.js 18+
-- MongoDB (local or Atlas)
+- Python 3.10+ recommended
+- Node.js 18+ recommended
+- MongoDB running locally or on Atlas
 
-## Environment Variables
+## 1) Backend configuration
 
-Create `backend/.env`:
+Copy and edit:
 
-```env
-MONGODB_URL=mongodb://localhost:27017
-DATABASE_NAME=british_auction_rfq
-JWT_SECRET=change-me-in-production
-JWT_ALGORITHM=HS256
-JWT_EXPIRES_MINUTES=120
-RATE_LIMIT_PER_MINUTE=120
-CORS_ORIGINS=http://localhost:5173,http://localhost:5174,http://localhost:3000
-TECHNICAL_SPECS_BASE_URL=
+```bash
+cp backend/.env.example backend/.env
 ```
 
-Create `frontend/.env` (or copy from `frontend/.env.example`):
+Set at least:
+
+```env
+MONGODB_URL=mongodb://127.0.0.1:27017
+DATABASE_NAME=british_auction_rfq
+JWT_SECRET=your-long-random-secret
+APP_ENV=development
+CORS_ORIGINS=http://localhost:5173,http://localhost:3000
+RATE_LIMIT_PER_MINUTE=120
+RATE_LIMIT_BID_SUBMIT_PER_MINUTE=10
+GEMINI_API_KEY=
+GEMINI_MODEL=gemini-2.5-flash
+```
+
+Important: backend startup fails if `JWT_SECRET` is missing or still insecure/default.
+
+## 2) Frontend configuration
+
+Create `frontend/.env`:
 
 ```env
 VITE_API_BASE_URL=http://localhost:8000/api
 VITE_WS_BASE_URL=ws://localhost:8000
 ```
 
-## Local Development
+If omitted, frontend uses built-in local/prod defaults from `frontend/src/api.js`.
 
-### 1) Run backend
+## 3) Run backend
 
 ```bash
 cd backend
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
 
-API docs: `http://localhost:8000/docs`
+Backend URLs:
 
-### 2) Run frontend
+- API root: `http://localhost:8000/`
+- OpenAPI docs: `http://localhost:8000/docs`
+
+## 4) Run frontend
 
 ```bash
 cd frontend
@@ -81,9 +123,11 @@ npm install
 npm run dev
 ```
 
-Frontend: `http://localhost:5173`
+Frontend URL: `http://localhost:5173`
 
-## Demo Data (Optional)
+## Seed Data
+
+### Quick demo seed
 
 ```bash
 cd backend
@@ -92,8 +136,18 @@ python seed_demo.py
 
 Creates:
 
-- buyer: `demo_buyer / demo123`
-- suppliers: `demo_supplier_a / demo123`, `demo_supplier_b / demo123`
+- `demo_rfqowner / demo123`
+- `demo_bidder_a / demo123`
+- `demo_bidder_b / demo123`
+
+### Full scenario seed
+
+```bash
+cd backend
+python seed_full.py
+```
+
+Creates a full mock dataset with multiple RFQ states (`upcoming`, `active`, `paused`, `closed`, `force_closed`), extension scenarios, and winner-awarded examples.
 
 ## Running Tests
 
@@ -113,6 +167,29 @@ npm run lint
 npm run build
 ```
 
+## Auction Rules (Implemented Behavior)
+
+- `forced_close_time` must be later than `bid_close_time`.
+- `current_close_time` starts as `bid_close_time`.
+- Bidding is rejected when current close or forced close is reached.
+- Extension checks occur only inside trigger window before current close.
+- Extension duration is capped by forced close.
+- Extension can be triggered by:
+  - `bid_received`
+  - `rank_change`
+  - `l1_change`
+- Extension logic runs only for British-style auction types (e.g. `Reverse Auction (lowest wins)`), not sealed/fixed types.
+
+## Security and Reliability Highlights
+
+- JWT auth with role-based access guards.
+- Password hashing with PBKDF2-SHA256 (legacy bcrypt verify support).
+- In-memory rate limiting (global + bid-submit specific).
+- Request ID propagation via `x-request-id`.
+- HTTPS redirect + HSTS in production mode.
+- Audit logs for auth/RFQ/bid/metrics/export operations.
+- Scheduler loop updates persisted statuses every 5 seconds and broadcasts changes.
+
 ## API Overview
 
 ### Auth
@@ -120,55 +197,67 @@ npm run build
 - `POST /api/auth/signup`
 - `POST /api/auth/login`
 - `GET /api/auth/me`
+- `GET /api/auth/settings`
+- `PATCH /api/auth/settings`
 
-### RFQ and bids
+### RFQ and Auction
 
+- `POST /api/rfqs`
 - `GET /api/rfqs`
-- `POST /api/rfqs` (buyer)
 - `GET /api/rfqs/{rfq_id}`
-- `PATCH /api/rfqs/{rfq_id}` (buyer)
-- `DELETE /api/rfqs/{rfq_id}` (buyer)
-- `POST /api/rfqs/{rfq_id}/pause` (buyer)
-- `POST /api/rfqs/{rfq_id}/bids` (supplier)
-- `GET /api/rfqs/{rfq_id}/bids`
-- `GET /api/rfqs/{rfq_id}/activity`
+- `PATCH /api/rfqs/{rfq_id}`
+- `DELETE /api/rfqs/{rfq_id}`
+- `POST /api/rfqs/{rfq_id}/pause`
+- `POST /api/rfqs/{rfq_id}/award`
+- `GET /api/bidder/my-auctions`
 
-### Metrics (buyer only)
+### Bids and Activity
+
+- `POST /api/rfqs/{rfq_id}/bids`
+- `GET /api/rfqs/{rfq_id}/bids`
+- `GET /api/rfqs/{rfq_id}/bids/export`
+- `GET /api/rfqs/{rfq_id}/bid-revisions`
+- `GET /api/rfqs/{rfq_id}/activity`
+- `GET /api/rfqs/{rfq_id}/activity/export`
+
+### Metrics and Dashboard
 
 - `GET /api/metrics/bids-per-rfq`
 - `GET /api/metrics/avg-bids?period=day|week|month`
 - `GET /api/metrics/winning-price-trend?period=day|week|month`
 - `GET /api/metrics/extensions-per-rfq`
 - `GET /api/metrics/extension-impact?period=day|week|month`
+- `POST /api/dashboard/recommendations`
 
 ### WebSocket
 
 - `WS /api/ws/rfqs/{rfq_id}`
-- Client must pass JWT as subprotocol: `["token", "<jwt>"]`.
+- Client must pass JWT as subprotocol: `["token", "<jwt>"]`
 
-## British Auction Rules Implemented
+## Pagination Contract
 
-- RFQ closes at `current_close_time` unless extended.
-- Extension is considered only in the configured trigger window before close.
-- If triggered, close time extends by `extension_duration_minutes`.
-- `current_close_time` never exceeds `forced_close_time`.
-- Bidding is rejected after current close or forced close.
-
-## Pagination
-
-These endpoints support pagination:
-
-- `GET /api/rfqs`
-- `GET /api/rfqs/{rfq_id}/bids`
-- `GET /api/rfqs/{rfq_id}/activity`
-- `GET /api/rfqs/{rfq_id}/activity/export?format=csv`
-- `POST /api/rfqs/{rfq_id}/award` (buyer, closed/force-closed only)
-
-Query params:
+Paginated endpoints generally support:
 
 - `page` (default `1`)
-- `page_size` (default `20`, max `100`)
+- `page_size` (typically default `20`; endpoint-specific max applies)
 
 Response shape:
 
-- `items`, `total`, `page`, `page_size`, `has_next`
+- `items`
+- `total`
+- `page`
+- `page_size`
+- `has_next`
+
+## Product Assets
+
+- Logo: `frontend/src/assets/bidforge-logo.svg`
+- Architecture diagram: `frontend/src/assets/diagram-system.svg`
+- Auction flow diagram: `frontend/src/assets/diagram-flow.svg`
+
+## Notes for Production Deployment
+
+- Use a strong `JWT_SECRET` and secure Mongo credentials.
+- Restrict CORS origins to exact domains.
+- Provide TLS termination and run with `APP_ENV=production`.
+- Replace in-memory rate limiter/websocket manager with distributed alternatives if scaling to multiple backend instances.

@@ -1,7 +1,12 @@
 export const TRIGGER_LABELS = {
   bid_received: "Bid received in trigger window",
-  rank_change: "Any supplier rank change",
+  rank_change: "Any bidder rank change",
   l1_change: "L1 rank change only",
+};
+
+export const BIDDER_VISIBILITY_LABELS = {
+  full_rank: "Full rank visibility",
+  masked_competitor: "Masked competitors",
 };
 
 export const STATUS_LABELS = {
@@ -14,6 +19,36 @@ export const STATUS_LABELS = {
 
 export const TERMINAL_STATUSES = new Set(["closed", "force_closed"]);
 
+const USER_SETTINGS_STORAGE_KEY = "user_settings";
+
+const DEFAULT_USER_SETTINGS = {
+  timezone: "Asia/Kolkata",
+  use_24h_time: false,
+  date_format: "medium",
+  auto_refresh_seconds: 10,
+};
+
+export function getUserSettings() {
+  try {
+    const raw = localStorage.getItem(USER_SETTINGS_STORAGE_KEY);
+    if (!raw) return { ...DEFAULT_USER_SETTINGS };
+    const parsed = JSON.parse(raw);
+    return { ...DEFAULT_USER_SETTINGS, ...(parsed || {}) };
+  } catch {
+    return { ...DEFAULT_USER_SETTINGS };
+  }
+}
+
+export function saveUserSettings(settings) {
+  const next = { ...DEFAULT_USER_SETTINGS, ...(settings || {}) };
+  localStorage.setItem(USER_SETTINGS_STORAGE_KEY, JSON.stringify(next));
+  return next;
+}
+
+export function getPreferredTimezoneLabel() {
+  return getUserSettings().timezone || "Asia/Kolkata";
+}
+
 export function toLocalDateTimeInputValue(dateLike) {
   const date = new Date(dateLike);
   if (Number.isNaN(date.getTime())) return "";
@@ -22,7 +57,13 @@ export function toLocalDateTimeInputValue(dateLike) {
 }
 
 export function formatDate(dateStr) {
-  return new Date(dateStr).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
+  const settings = getUserSettings();
+  return new Date(dateStr).toLocaleString("en-IN", {
+    timeZone: settings.timezone || "Asia/Kolkata",
+    dateStyle: settings.date_format || "medium",
+    timeStyle: "short",
+    hour12: !settings.use_24h_time,
+  });
 }
 
 export function formatCurrency(val) {

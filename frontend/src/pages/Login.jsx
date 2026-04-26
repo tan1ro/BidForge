@@ -118,7 +118,7 @@ export default function Login({ onLogin }) {
             </Typography>
             <Stack spacing={1}>
               <Typography color="text.primary">- Live RFQ and auction visibility</Typography>
-              <Typography color="text.primary">- Smart supplier communication</Typography>
+              <Typography color="text.primary">- Smart bidder communication</Typography>
               <Typography color="text.primary">- Structured timelines and follow-ups</Typography>
             </Stack>
           </Stack>

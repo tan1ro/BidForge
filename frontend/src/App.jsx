@@ -31,11 +31,12 @@ import AddCircleOutlineIcon from "@mui/icons-material/AddCircleOutline";
 import InsightsOutlinedIcon from "@mui/icons-material/InsightsOutlined";
 import LogoutIcon from "@mui/icons-material/Logout";
 import AccountCircleOutlinedIcon from "@mui/icons-material/AccountCircleOutlined";
+import DashboardOutlinedIcon from "@mui/icons-material/DashboardOutlined";
 import bidForgeLogo from "./assets/bidforge-logo.svg";
 import RFQList from './pages/RFQList';
 import CreateRFQ from './pages/CreateRFQ';
 import AuctionDetail from './pages/AuctionDetail';
-import BuyerMetrics from "./pages/BuyerMetrics";
+import RfqownerMetrics from "./pages/BuyerMetrics";
 import Login from './pages/Login';
 import Signup from './pages/Signup';
 import Profile from './pages/Profile';
@@ -43,7 +44,8 @@ import Home from "./pages/Home";
 import About from "./pages/About";
 import NotFound from "./pages/NotFound";
 import ServerError from "./pages/ServerError";
-import SupplierMyAuctions from "./pages/SupplierMyAuctions";
+import BidderMyAuctions from "./pages/SupplierMyAuctions";
+import Dashboard from "./pages/Dashboard";
 
 function AppShell({ session, isAuthenticated, onLogout, themeMode, onToggleTheme, children }) {
   const [open, setOpen] = useState(false);
@@ -51,9 +53,10 @@ function AppShell({ session, isAuthenticated, onLogout, themeMode, onToggleTheme
   const [confirmLogout, setConfirmLogout] = useState(false);
   const location = useLocation();
   const navItems = [
+    { label: "Dashboard", path: "/dashboard", icon: <DashboardOutlinedIcon fontSize="small" /> },
     { label: "Auctions", path: "/auctions", icon: <GavelOutlinedIcon fontSize="small" /> },
     { label: "Profile", path: "/profile", icon: <AccountCircleOutlinedIcon fontSize="small" /> },
-    ...(session.role === "buyer"
+    ...(session.role === "rfqowner"
       ? [
           { label: "Create RFQ", path: "/create", icon: <AddCircleOutlineIcon fontSize="small" /> },
           { label: "Metrics", path: "/metrics", icon: <InsightsOutlinedIcon fontSize="small" /> },
@@ -185,7 +188,7 @@ function AppShell({ session, isAuthenticated, onLogout, themeMode, onToggleTheme
           </Stack>
           <Chip
             size="small"
-            label={session.role === "buyer" ? "Buyer Workspace" : "Supplier Workspace"}
+            label={session.role === "rfqowner" ? "RFQ Owner Workspace" : "Bidder Workspace"}
             color="secondary"
             sx={{ display: { xs: "none", md: "inline-flex" }, mr: 1.5 }}
           />
@@ -218,6 +221,12 @@ function AppShell({ session, isAuthenticated, onLogout, themeMode, onToggleTheme
           <Typography variant="body2" color="text.secondary" sx={{ px: 2, mb: 1.5 }}>
             Navigate your workspace
           </Typography>
+          <Chip
+            size="small"
+            label={session.role === "rfqowner" ? "RFQ Owner Workspace" : "Bidder Workspace"}
+            color="secondary"
+            sx={{ ml: 2, mb: 1.5 }}
+          />
           <List>
             {navItems.map((item) => (
               <ListItemButton
@@ -289,7 +298,7 @@ function App({ themeMode, onToggleTheme }) {
               path="/login"
               element={
                 isAuthenticated ? (
-                  <Navigate to="/auctions" replace />
+                  <Navigate to="/dashboard" replace />
                 ) : (
                   <Login onLogin={({ role, companyName }) => setSession({ token: localStorage.getItem('auth_token'), role, companyName })} />
                 )
@@ -299,7 +308,7 @@ function App({ themeMode, onToggleTheme }) {
               path="/signup"
               element={
                 isAuthenticated ? (
-                  <Navigate to="/auctions" replace />
+                  <Navigate to="/dashboard" replace />
                 ) : (
                   <Signup onSignup={({ role, companyName }) => setSession({ token: localStorage.getItem('auth_token'), role, companyName })} />
                 )
@@ -307,20 +316,21 @@ function App({ themeMode, onToggleTheme }) {
             />
             <Route path="/" element={<Home />} />
             <Route path="/about" element={<About />} />
+            <Route path="/dashboard" element={isAuthenticated ? <Dashboard role={session.role} /> : <Navigate to="/login" replace />} />
             <Route path="/auctions" element={isAuthenticated ? <RFQList role={session.role} /> : <Navigate to="/login" replace />} />
             <Route path="/profile" element={isAuthenticated ? <Profile /> : <Navigate to="/login" replace />} />
             <Route
               path="/create"
-              element={isAuthenticated && session.role === 'buyer' ? <CreateRFQ /> : <Navigate to="/auctions" replace />}
+              element={isAuthenticated && session.role === 'rfqowner' ? <CreateRFQ /> : <Navigate to="/auctions" replace />}
             />
             <Route
               path="/metrics"
-              element={isAuthenticated && session.role === "buyer" ? <BuyerMetrics /> : <Navigate to="/auctions" replace />}
+              element={isAuthenticated && session.role === "rfqowner" ? <RfqownerMetrics /> : <Navigate to="/auctions" replace />}
             />
             <Route
               path="/my-bids"
               element={
-                isAuthenticated && session.role === "supplier" ? <SupplierMyAuctions /> : <Navigate to="/auctions" replace />
+                isAuthenticated && session.role === "bidder" ? <BidderMyAuctions /> : <Navigate to="/auctions" replace />
               }
             />
             <Route path="/auction/:id" element={isAuthenticated ? <AuctionDetail role={session.role} /> : <Navigate to="/login" replace />} />

@@ -9,14 +9,14 @@ vi.mock("../api", () => ({
   login: vi.fn(async () => ({
     data: {
       access_token: "token",
-      role: "buyer",
-      username: "buyer1",
+      role: "rfqowner",
+      username: "rfqowner1",
     },
   })),
   signup: vi.fn(async () => ({
     data: {
       access_token: "token",
-      role: "supplier",
+      role: "bidder",
       username: "user2",
     },
   })),

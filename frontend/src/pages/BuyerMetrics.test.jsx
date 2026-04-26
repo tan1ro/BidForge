@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { vi } from "vitest";
 
-import BuyerMetrics from "./BuyerMetrics";
+import RfqownerMetrics from "./BuyerMetrics";
 
 vi.mock("../api", () => ({
   getBidsPerRFQMetrics: vi.fn(async () => ({
@@ -43,9 +43,9 @@ vi.mock("../api", () => ({
   })),
 }));
 
-describe("BuyerMetrics", () => {
+describe("RfqownerMetrics", () => {
   it("renders success metrics cards and sections", async () => {
-    render(<BuyerMetrics />);
+    render(<RfqownerMetrics />);
 
     await waitFor(() => {
       expect(screen.getByText("Success Metrics")).toBeInTheDocument();

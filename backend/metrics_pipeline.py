@@ -1,4 +1,4 @@
-"""Aggregation pipelines for buyer metrics (no N+1)."""
+"""Aggregation pipelines for rfqowner metrics (no N+1)."""
 from __future__ import annotations
 
 from typing import Any
@@ -35,8 +35,11 @@ async def pipeline_bids_per_rfq_metrics(
     skip: int,
     limit: int,
     name_search: str | None,
+    created_by: str | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     q: dict = {}
+    if created_by:
+        q["created_by"] = created_by
     if name_search and name_search.strip():
         q["name"] = {"$regex": name_search.strip(), "$options": "i"}
     count = await rfqs_collection.count_documents(q)
@@ -67,10 +70,12 @@ async def pipeline_bids_per_rfq_metrics(
     return rows, count
 
 
-async def pipeline_avg_bids(period: str) -> list[dict[str, Any]]:
+async def pipeline_avg_bids(period: str, created_by: str | None = None) -> list[dict[str, Any]]:
     f = _period_bucket_field("$created_at", period)
+    base_match = {"created_by": created_by} if created_by else {}
     return await rfqs_collection.aggregate(
         [
+            {"$match": base_match},
             {"$addFields": {"_rid": {"$toString": "$_id"}, "at": f}},
             {
                 "$lookup": {
@@ -129,10 +134,12 @@ async def pipeline_avg_bids(period: str) -> list[dict[str, Any]]:
     ).to_list(length=5000)
 
 
-async def pipeline_winning_price_trend(period: str) -> list[dict[str, Any]]:
+async def pipeline_winning_price_trend(period: str, created_by: str | None = None) -> list[dict[str, Any]]:
     closed = {
         "status": {"$in": [AuctionStatus.CLOSED.value, AuctionStatus.FORCE_CLOSED.value]}
     }
+    if created_by:
+        closed["created_by"] = created_by
     f = _period_bucket_field("$current_close_time", period)
     return await rfqs_collection.aggregate(
         [
@@ -193,6 +200,7 @@ async def pipeline_extensions_per_rfq(
     skip: int,
     limit: int,
     name_search: str | None,
+    created_by: str | None = None,
 ) -> tuple[list[dict], int]:
     # Count time_extended per rfq, join RFQ metadata
     ext = await activity_logs_collection.aggregate(
@@ -203,6 +211,8 @@ async def pipeline_extensions_per_rfq(
     ).to_list(length=100_000)
     ext_by = {e["_id"]: e["extension_count"] for e in ext}
     q: dict = {}
+    if created_by:
+        q["created_by"] = created_by
     if name_search and name_search.strip():
         q["name"] = {"$regex": name_search.strip(), "$options": "i"}
     total = await rfqs_collection.count_documents(q)
@@ -228,17 +238,18 @@ async def pipeline_extensions_per_rfq(
     return out, total
 
 
-async def pipeline_extension_impact(period: str) -> tuple[list[dict], list[dict]]:
+async def pipeline_extension_impact(period: str, created_by: str | None = None) -> tuple[list[dict], list[dict]]:
     f = _period_bucket_field("$current_close_time", period)
+    base_match: dict[str, Any] = {
+        "status": {
+            "$in": [AuctionStatus.CLOSED.value, AuctionStatus.FORCE_CLOSED.value]
+        }
+    }
+    if created_by:
+        base_match["created_by"] = created_by
     r_items = await rfqs_collection.aggregate(
         [
-            {
-                "$match": {
-                    "status": {
-                        "$in": [AuctionStatus.CLOSED.value, AuctionStatus.FORCE_CLOSED.value]
-                    }
-                }
-            },
+            {"$match": base_match},
             {"$addFields": {"_rid": {"$toString": "$_id"}, "pb": f}},
             {
                 "$lookup": {

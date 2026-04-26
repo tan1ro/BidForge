@@ -39,6 +39,8 @@ class Settings:
     rate_limit_bid_submit_per_minute: int = int(os.getenv("RATE_LIMIT_BID_SUBMIT_PER_MINUTE", "10"))
     rate_limiter_max_host_paths: int = int(os.getenv("RATE_LIMITER_MAX_HOST_PATHS", "4096"))
     technical_specs_base_url: str = os.getenv("TECHNICAL_SPECS_BASE_URL", "")
+    gemini_api_key: str = os.getenv("GEMINI_API_KEY", "").strip()
+    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
 
 
 settings = Settings()

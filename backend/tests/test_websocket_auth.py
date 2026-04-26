@@ -54,12 +54,12 @@ async def test_ws_accepts_valid_token(monkeypatch):
     called = {"connect": 0}
 
     def fake_user_from_token(_):
-        return auth.UserPrincipal(username="supplier1", role=auth.UserRole.SUPPLIER)
+        return auth.UserPrincipal(username="bidder1", role=auth.UserRole.BIDDER)
 
     class FakeUsersCollection:
         async def find_one(self, query):
-            if query.get("username") == "supplier1":
-                return {"username": "supplier1"}
+            if query.get("username") == "bidder1":
+                return {"username": "bidder1"}
             return None
 
     async def fake_connect(rfq_id, websocket, subprotocol=None):

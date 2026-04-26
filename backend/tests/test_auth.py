@@ -36,12 +36,12 @@ async def test_signup_and_login_roundtrip(monkeypatch):
     fake = FakeUsersCollection()
     monkeypatch.setattr(auth, "users_collection", fake)
 
-    created = await auth.create_user("alice", "alice@example.com", "secret123", auth.UserRole.SUPPLIER)
+    created = await auth.create_user("alice", "alice@example.com", "secret123", auth.UserRole.BIDDER)
     assert created.username == "alice"
 
     authed = await auth.authenticate_user("alice", "secret123")
     assert authed is not None
-    assert authed.role == auth.UserRole.SUPPLIER
+    assert authed.role == auth.UserRole.BIDDER
 
     authed_by_email = await auth.authenticate_user("alice@example.com", "secret123")
     assert authed_by_email is not None
@@ -52,10 +52,10 @@ async def test_signup_and_login_roundtrip(monkeypatch):
 async def test_signup_duplicate_is_rejected(monkeypatch):
     fake = FakeUsersCollection()
     monkeypatch.setattr(auth, "users_collection", fake)
-    await auth.create_user("bob", "bob@example.com", "secret123", auth.UserRole.BUYER)
+    await auth.create_user("bob", "bob@example.com", "secret123", auth.UserRole.RFQOWNER)
 
     with pytest.raises(HTTPException) as exc:
-        await auth.create_user("bob", "other@example.com", "secret123", auth.UserRole.BUYER)
+        await auth.create_user("bob", "other@example.com", "secret123", auth.UserRole.RFQOWNER)
     assert exc.value.status_code == 409
 
 
@@ -63,19 +63,31 @@ def test_user_signup_role_normalization():
     from models import UserSignup
 
     payload = UserSignup(
-        company_name="John Smith Logistics",
+        company_name="Example",
         email="john@example.com",
         password="secret123",
-        role="SUPPLIER",
+        role="BIDDER",
     )
-    assert payload.role == "supplier"
+    assert payload.role == "bidder"
+
+
+def test_user_signup_company_email_mismatch_rejected():
+    from models import UserSignup
+
+    with pytest.raises(Exception):
+        UserSignup(
+            company_name="Acme",
+            email="john@globex.com",
+            password="secret123",
+            role="bidder",
+        )
 
 
 @pytest.mark.asyncio
 async def test_login_error_messages(monkeypatch):
     fake = FakeUsersCollection()
     monkeypatch.setattr(auth, "users_collection", fake)
-    await auth.create_user("charlie", "charlie@example.com", "secret123", auth.UserRole.SUPPLIER)
+    await auth.create_user("charlie", "charlie@example.com", "secret123", auth.UserRole.BIDDER)
 
     not_found = await auth.get_login_error("nobody", "whatever")
     assert not_found == "Company name or email does not exist"
@@ -88,7 +100,7 @@ async def test_login_error_messages(monkeypatch):
 async def test_get_login_error_success_returns_none(monkeypatch):
     fake = FakeUsersCollection()
     monkeypatch.setattr(auth, "users_collection", fake)
-    await auth.create_user("diana", "diana@example.com", "secret123", auth.UserRole.BUYER)
+    await auth.create_user("diana", "diana@example.com", "secret123", auth.UserRole.RFQOWNER)
 
     error = await auth.get_login_error("diana", "secret123")
     assert error is None
@@ -98,7 +110,7 @@ async def test_get_login_error_success_returns_none(monkeypatch):
 async def test_authenticate_user_wrong_password_returns_none(monkeypatch):
     fake = FakeUsersCollection()
     monkeypatch.setattr(auth, "users_collection", fake)
-    await auth.create_user("ed", "ed@example.com", "secret123", auth.UserRole.SUPPLIER)
+    await auth.create_user("ed", "ed@example.com", "secret123", auth.UserRole.BIDDER)
 
     authed = await auth.authenticate_user("ed", "wrong-password")
     assert authed is None

@@ -49,12 +49,14 @@ import {
 import { parseApiError } from "../utils/errorHandling";
 import {
   TRIGGER_LABELS,
+  BIDDER_VISIBILITY_LABELS,
   STATUS_LABELS,
   TERMINAL_STATUSES,
   formatDate,
   formatCurrency,
   openFileLink,
   getTimeRemaining,
+  getPreferredTimezoneLabel,
 } from "../utils/auctionFormatters";
 import BidFormDialog from "../components/auction/BidFormDialog";
 import EditRFQDialog from "../components/auction/EditRFQDialog";
@@ -79,7 +81,7 @@ export default function AuctionDetail({ role }) {
   const theme = useTheme();
   const { id } = useParams();
   const location = useLocation();
-  const timezoneLabel = Intl.DateTimeFormat().resolvedOptions().timeZone || "local timezone";
+  const timezoneLabel = getPreferredTimezoneLabel();
   const [rfq, setRfq] = useState(null);
   const [bids, setBids] = useState([]);
   const [bidsMeta, setBidsMeta] = useState({ total: 0, page: 1, page_size: 10 });
@@ -131,7 +133,10 @@ export default function AuctionDetail({ role }) {
   }, [id, bidsMeta.page, bidsMeta.page_size, activityMeta.page, activityMeta.page_size, activityEventType]);
 
   useEffect(() => {
-    void loadData();
+    const id = setTimeout(() => {
+      void loadData();
+    }, 0);
+    return () => clearTimeout(id);
   }, [loadData]);
 
   useEffect(() => {
@@ -204,7 +209,9 @@ export default function AuctionDetail({ role }) {
     );
   }
   if (!rfq) return <Alert severity="error">Auction not found.</Alert>;
-  const canManageAuction = role === "buyer" && (rfq.status === "upcoming" || bids.length === 0);
+  const isAuctionOver = TERMINAL_STATUSES.has(rfq.status);
+  const canEditAuction = role === "rfqowner" && !isAuctionOver;
+  const canPauseAuction = role === "rfqowner" && !isAuctionOver && (rfq.status === "upcoming" || bids.length === 0);
   const lowestTotal = bids.length > 0 ? Math.min(...bids.map((b) => Number(b.total_price || 0))) : Number(rfq.starting_price || 0);
   const decrementBlocksBidding = Number(rfq.minimum_decrement || 0) >= lowestTotal && lowestTotal > 0;
 
@@ -232,8 +239,8 @@ export default function AuctionDetail({ role }) {
             {TERMINAL_STATUSES.has(rfq.status) && rfq.winner_carrier && (
               <Chip size="small" color="success" label={`Winner: ${rfq.winner_carrier}`} />
             )}
-            {rfq.awarded_supplier && (
-              <Chip size="small" color="secondary" label={`Awarded: ${rfq.awarded_supplier}`} />
+            {rfq.awarded_bidder && (
+              <Chip size="small" color="secondary" label={`Awarded: ${rfq.awarded_bidder}`} />
             )}
           </Stack>
           {TERMINAL_STATUSES.has(rfq.status) && rfq.winning_bid_total != null && (
@@ -248,7 +255,7 @@ export default function AuctionDetail({ role }) {
           )}
         </Box>
         <Stack direction="row" spacing={1}>
-          {role === "buyer" && (
+          {role === "rfqowner" && (
             <>
               <Button
                 variant="outlined"
@@ -284,11 +291,13 @@ export default function AuctionDetail({ role }) {
               </Button>
             </>
           )}
-          {canManageAuction && (
+          {canEditAuction && (
+            <Button variant="outlined" startIcon={<EditOutlinedIcon />} onClick={() => setShowEditForm(true)}>
+              Edit auction
+            </Button>
+          )}
+          {canPauseAuction && (
             <>
-              <Button variant="outlined" startIcon={<EditOutlinedIcon />} onClick={() => setShowEditForm(true)}>
-                Edit auction
-              </Button>
               <Button
                 variant="outlined"
                 color="warning"
@@ -311,12 +320,12 @@ export default function AuctionDetail({ role }) {
               </Button>
             </>
           )}
-          {role === "buyer" && TERMINAL_STATUSES.has(rfq.status) && !rfq.awarded_bid_id && bids.length > 0 && (
+          {role === "rfqowner" && TERMINAL_STATUSES.has(rfq.status) && !rfq.awarded_bid_id && bids.length > 0 && (
             <Button variant="contained" color="secondary" startIcon={<WorkspacePremiumOutlinedIcon />} onClick={() => setShowAwardDialog(true)}>
               Award Winner
             </Button>
           )}
-          {rfq.status === "active" && role === "supplier" && (
+          {rfq.status === "active" && role === "bidder" && (
             <Button variant="contained" startIcon={<SendOutlinedIcon />} onClick={() => setShowBidForm(true)}>
               Submit bid
             </Button>
@@ -386,7 +395,7 @@ export default function AuctionDetail({ role }) {
                 <>
                   {bids.length === 0 ? (
                     <Alert severity="info">
-                      No bids yet. Suppliers can submit quotes while the auction is active. Share the auction link and monitor rank changes in real time.
+                      No bids yet. Bidders can submit quotes while the auction is active. Share the auction link and monitor rank changes in real time.
                     </Alert>
                   ) : (
                     <TableContainer>
@@ -416,7 +425,16 @@ export default function AuctionDetail({ role }) {
                                   {TERMINAL_STATUSES.has(rfq.status) && bid.rank === 1 && <Chip size="small" color="success" label="Winner" />}
                                 </Stack>
                               </TableCell>
-                              <TableCell>{bid.carrier_name}</TableCell>
+                              <TableCell>
+                                <Stack spacing={0.25}>
+                                  <Typography variant="body2">{bid.carrier_name}</Typography>
+                                  {bid.carrier_account_name && bid.carrier_account_name !== bid.carrier_name && (
+                                    <Typography variant="caption" color="text.secondary">
+                                      (account: {bid.carrier_account_name})
+                                    </Typography>
+                                  )}
+                                </Stack>
+                              </TableCell>
                               <TableCell>{formatCurrency(bid.freight_charges)}</TableCell>
                               <TableCell>{formatCurrency(bid.origin_charges)}</TableCell>
                               <TableCell>{formatCurrency(bid.destination_charges)}</TableCell>
@@ -507,7 +525,7 @@ export default function AuctionDetail({ role }) {
           </Card>
         </Grid>
 
-        {role === "buyer" && (
+        {role === "rfqowner" && (
           <Grid size={{ xs: 12, lg: 4 }}>
             <Card>
               <CardContent>
@@ -518,6 +536,7 @@ export default function AuctionDetail({ role }) {
                   <Typography variant="body2"><strong>Current Close:</strong> {formatDate(rfq.current_close_time)}</Typography>
                   <Typography variant="body2"><strong>Forced Close:</strong> {formatDate(rfq.forced_close_time)}</Typography>
                   <Typography variant="body2"><strong>Trigger:</strong> {TRIGGER_LABELS[rfq.extension_trigger]}</Typography>
+                  <Typography variant="body2"><strong>Bidder Visibility:</strong> {BIDDER_VISIBILITY_LABELS[rfq.bidder_visibility_mode] || BIDDER_VISIBILITY_LABELS.full_rank}</Typography>
                   <Typography variant="body2"><strong>Trigger Window:</strong> {rfq.trigger_window_minutes} minutes</Typography>
                   <Typography variant="body2"><strong>Extension:</strong> {rfq.extension_duration_minutes} minutes</Typography>
                   <Typography variant="body2"><strong>Auction Type:</strong> {rfq.auction_type || "Reverse Auction (lowest wins)"}</Typography>
@@ -534,7 +553,6 @@ export default function AuctionDetail({ role }) {
                       Open technical specs
                     </Button>
                   )}
-                  <Typography variant="body2"><strong>Supplier Visibility:</strong> {rfq.supplier_visibility_mode === "masked_competitor" ? "Masked competitor bids" : "Full rank visibility"}</Typography>
                   <Typography variant="body2"><strong>Loading Instructions:</strong> {rfq.loading_unloading_notes || "Not provided"}</Typography>
                   <Typography variant="caption" color="text.secondary">
                     Times shown in {timezoneLabel}. Backend stores UTC.

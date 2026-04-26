@@ -39,7 +39,6 @@ export default function BidFormDialog({ rfq, rfqId, onClose, onSuccess, onError 
   const total = freight + origin + destination;
   const isSubmitDisabled =
     loading ||
-    !form.carrier_name.trim() ||
     !Number.isFinite(total) ||
     total <= 0 ||
     !Number.isFinite(transitDays) ||
@@ -61,10 +60,6 @@ export default function BidFormDialog({ rfq, rfqId, onClose, onSuccess, onError 
   async function handleSubmit(e) {
     e.preventDefault();
     setFormError("");
-    if (!form.carrier_name.trim()) {
-      setFormError("Carrier name is required");
-      return;
-    }
     if (!Number.isFinite(total) || total <= 0) {
       setFormError("Total bid amount must be greater than zero");
       return;
@@ -112,13 +107,13 @@ export default function BidFormDialog({ rfq, rfqId, onClose, onSuccess, onError 
               </Alert>
             )}
             <TextField
-              label="Carrier name"
+              label="Display name (optional)"
               value={form.carrier_name}
               onChange={(e) => handleChange("carrier_name", e.target.value)}
-              required
               fullWidth
               autoComplete="organization"
-              placeholder="Enter carrier/company name"
+              placeholder="Leave blank to use your account name"
+              helperText="How your company name appears to the RFQ Owner. Leave blank to use your account name."
             />
             <Grid container spacing={2}>
               <Grid size={{ xs: 12, sm: 4 }}>

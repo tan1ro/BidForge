@@ -17,7 +17,7 @@ export default function Home() {
     {
       icon: <SecurityOutlinedIcon color="primary" fontSize="small" />,
       title: "Secure Role Access",
-      description: "Protect buyer and supplier actions with role-based access and authenticated workflows.",
+      description: "Protect RFQ Owner and Bidder actions with role-based access and authenticated workflows.",
     },
     {
       icon: <TimelineOutlinedIcon color="primary" fontSize="small" />,
@@ -72,7 +72,7 @@ export default function Home() {
                 Run procurement auctions faster with BidForge
               </Typography>
               <Typography color="text.secondary" sx={{ mt: 1.8, maxWidth: 700 }}>
-                Launch RFQs, receive supplier bids in real time, and close every auction with transparent rules and
+                Launch RFQs, receive bidder bids in real time, and close every auction with transparent rules and
                 decision-ready data.
               </Typography>
               <Stack direction={{ xs: "column", sm: "row" }} spacing={1.2} sx={{ mt: 3 }} flexWrap="wrap" useFlexGap>

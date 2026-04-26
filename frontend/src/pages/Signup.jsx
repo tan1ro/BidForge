@@ -16,6 +16,14 @@ import {
 import { signup } from "../api";
 import { parseApiError } from "../utils/errorHandling";
 
+function companyMatchesEmailDomain(companyName, email) {
+  const normalizedCompany = companyName.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const domain = email.includes("@") ? email.split("@")[1] : "";
+  const domainRoot = domain.split(".")[0] || "";
+  const normalizedDomain = domainRoot.toLowerCase().replace(/[^a-z0-9]/g, "");
+  return normalizedCompany && normalizedDomain && normalizedCompany === normalizedDomain;
+}
+
 export default function Signup({ onSignup }) {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
@@ -25,7 +33,7 @@ export default function Signup({ onSignup }) {
     email: "",
     password: "",
     confirmPassword: "",
-    role: "supplier",
+    role: "bidder",
   });
 
   async function handleSubmit(e) {
@@ -33,6 +41,10 @@ export default function Signup({ onSignup }) {
     setError("");
     if (form.password !== form.confirmPassword) {
       setError("Password and Confirm Password must match");
+      return;
+    }
+    if (!companyMatchesEmailDomain(form.company_name, form.email)) {
+      setError("Email domain must match company name (e.g. Acme -> name@acme.com)");
       return;
     }
     setLoading(true);
@@ -119,7 +131,7 @@ export default function Signup({ onSignup }) {
             </Typography>
             <Stack spacing={1}>
               <Typography color="text.primary">- Live RFQ and auction visibility</Typography>
-              <Typography color="text.primary">- Smart supplier communication</Typography>
+              <Typography color="text.primary">- Smart bidder communication</Typography>
               <Typography color="text.primary">- Structured timelines and follow-ups</Typography>
             </Stack>
           </Stack>
@@ -177,8 +189,8 @@ export default function Signup({ onSignup }) {
                       onChange={(e) => setForm((prev) => ({ ...prev, role: e.target.value }))}
                       required
                     >
-                      <MenuItem value="buyer">Buyer</MenuItem>
-                      <MenuItem value="supplier">Supplier</MenuItem>
+                      <MenuItem value="rfqowner">RFQ Owner</MenuItem>
+                      <MenuItem value="bidder">Bidder</MenuItem>
                     </TextField>
                     <Button type="submit" variant="contained" size="large" disabled={loading}>
                       {loading ? <CircularProgress size={22} color="inherit" /> : "Create an account"}

@@ -3,6 +3,11 @@ import { Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, Grid, M
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import { TRIGGER_LABELS, toLocalDateTimeInputValue } from "../../utils/auctionFormatters";
 
+const BIDDER_VISIBILITY_OPTIONS = [
+  { value: "full_rank", label: "Full rank visibility" },
+  { value: "masked_competitor", label: "Masked competitors" },
+];
+
 export default function EditRFQDialog({ rfq, onClose, onSuccess }) {
   const [form, setForm] = useState({
     name: rfq.name || "",
@@ -17,10 +22,10 @@ export default function EditRFQDialog({ rfq, onClose, onSuccess }) {
     trigger_window_minutes: String(rfq.trigger_window_minutes ?? 10),
     extension_duration_minutes: String(rfq.extension_duration_minutes ?? 5),
     extension_trigger: rfq.extension_trigger || "bid_received",
+    bidder_visibility_mode: rfq.bidder_visibility_mode || "full_rank",
     starting_price: String(rfq.starting_price ?? 0),
     minimum_decrement: String(rfq.minimum_decrement ?? 0),
     technical_specs_url: rfq.technical_specs_url || "",
-    supplier_visibility_mode: rfq.supplier_visibility_mode || "full_rank",
   });
 
   return (
@@ -62,19 +67,29 @@ export default function EditRFQDialog({ rfq, onClose, onSuccess }) {
             <Stack direction="row" spacing={0.5} alignItems="center" sx={{ mt: 0.5 }}>
               <InfoOutlinedIcon fontSize="inherit" />
               <Typography variant="caption" color="text.secondary">
-                Bid received extends on any bid, Rank change extends when supplier order changes, and L1 change extends only when lowest bidder changes.
+                Bid received extends on any bid, Rank change extends when bidder order changes, and L1 change extends only when lowest bidder changes.
               </Typography>
             </Stack>
+          </Grid>
+          <Grid size={{ xs: 12, md: 6 }}>
+            <TextField
+              select
+              fullWidth
+              label="Bidder Visibility Mode"
+              value={form.bidder_visibility_mode}
+              onChange={(e) => setForm((p) => ({ ...p, bidder_visibility_mode: e.target.value }))}
+              helperText="Configure bidder identity visibility for RFQ Owner bid table/export."
+            >
+              {BIDDER_VISIBILITY_OPTIONS.map((opt) => (
+                <MenuItem key={opt.value} value={opt.value}>
+                  {opt.label}
+                </MenuItem>
+              ))}
+            </TextField>
           </Grid>
           <Grid size={{ xs: 12, md: 6 }}><TextField fullWidth type="number" label="Starting Price (INR)" value={form.starting_price} onChange={(e) => setForm((p) => ({ ...p, starting_price: e.target.value }))} /></Grid>
           <Grid size={{ xs: 12, md: 6 }}><TextField fullWidth type="number" label="Minimum Decrement (INR)" value={form.minimum_decrement} onChange={(e) => setForm((p) => ({ ...p, minimum_decrement: e.target.value }))} /></Grid>
           <Grid size={{ xs: 12, md: 6 }}><TextField fullWidth label="Technical Specs URL" value={form.technical_specs_url} onChange={(e) => setForm((p) => ({ ...p, technical_specs_url: e.target.value }))} /></Grid>
-          <Grid size={{ xs: 12, md: 6 }}>
-            <TextField select fullWidth label="Supplier Visibility" value={form.supplier_visibility_mode} onChange={(e) => setForm((p) => ({ ...p, supplier_visibility_mode: e.target.value }))}>
-              <MenuItem value="full_rank">Full rank visibility</MenuItem>
-              <MenuItem value="masked_competitor">Masked competitor bids</MenuItem>
-            </TextField>
-          </Grid>
         </Grid>
         </DialogContent>
         <DialogActions>
