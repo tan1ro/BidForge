@@ -1,10 +1,13 @@
 from datetime import datetime, timedelta, timezone
 from enum import Enum
+import base64
+import hashlib
+import hmac
+import os
 
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 from pydantic import BaseModel
 
 from config import settings
@@ -41,16 +44,24 @@ class UserProfileResponse(BaseModel):
 
 
 bearer_scheme = HTTPBearer(auto_error=False)
-# Use bcrypt_sha256 to avoid bcrypt's 72-byte password truncation/validation edge cases
-# in some backend versions while keeping bcrypt as the underlying KDF.
-pwd_context = CryptContext(schemes=["bcrypt_sha256"], deprecated="auto")
+PBKDF2_ALGORITHM = "pbkdf2_sha256"
+PBKDF2_ITERATIONS = 390000
+PBKDF2_SALT_BYTES = 16
+
+
+def _b64encode(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("ascii")
+
+
+def _b64decode(value: str) -> bytes:
+    return base64.urlsafe_b64decode(value.encode("ascii"))
 
 
 async def authenticate_user(username: str, password: str) -> UserPrincipal | None:
     user = await users_collection.find_one({"$or": [{"username": username}, {"email": username}]})
     if not user:
         return None
-    if not pwd_context.verify(password, user["password_hash"]):
+    if not verify_password(password, user["password_hash"]):
         return None
     return UserPrincipal(username=user["username"], role=UserRole(user["role"]))
 
@@ -59,13 +70,36 @@ async def get_login_error(username: str, password: str) -> str | None:
     user = await users_collection.find_one({"$or": [{"username": username}, {"email": username}]})
     if not user:
         return "User or email does not exist"
-    if not pwd_context.verify(password, user["password_hash"]):
+    if not verify_password(password, user["password_hash"]):
         return "Incorrect password"
     return None
 
 
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    salt = os.urandom(PBKDF2_SALT_BYTES)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt,
+        PBKDF2_ITERATIONS,
+    )
+    return f"{PBKDF2_ALGORITHM}${PBKDF2_ITERATIONS}${_b64encode(salt)}${_b64encode(digest)}"
+
+
+def verify_password(password: str, encoded_password: str) -> bool:
+    try:
+        algorithm, iterations, salt_b64, hash_b64 = encoded_password.split("$", 3)
+        if algorithm != PBKDF2_ALGORITHM:
+            return False
+        digest = hashlib.pbkdf2_hmac(
+            "sha256",
+            password.encode("utf-8"),
+            _b64decode(salt_b64),
+            int(iterations),
+        )
+        return hmac.compare_digest(_b64encode(digest), hash_b64)
+    except (TypeError, ValueError):
+        return False
 
 
 async def create_user(username: str, email: str, password: str, role: UserRole) -> UserPrincipal:
@@ -90,24 +124,30 @@ def create_access_token(user: UserPrincipal) -> str:
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 
+def user_from_token(token: str) -> UserPrincipal:
+    try:
+        payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    username = payload.get("sub")
+    role = payload.get("role")
+    if not username or role not in {UserRole.BUYER.value, UserRole.SUPPLIER.value}:
+        raise HTTPException(status_code=401, detail="Invalid token payload")
+
+    return UserPrincipal(username=username, role=UserRole(role))
+
+
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
 ) -> UserPrincipal:
     if credentials is None:
         raise HTTPException(status_code=401, detail="Authentication required")
-    token = credentials.credentials
-    try:
-        payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
-        username = payload.get("sub")
-        role = payload.get("role")
-        if not username or role not in {UserRole.BUYER.value, UserRole.SUPPLIER.value}:
-            raise HTTPException(status_code=401, detail="Invalid token payload")
-        user = await users_collection.find_one({"username": username})
-        if not user:
-            raise HTTPException(status_code=401, detail="User no longer exists")
-        return UserPrincipal(username=username, role=UserRole(role))
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    principal = user_from_token(credentials.credentials)
+    user = await users_collection.find_one({"username": principal.username})
+    if not user:
+        raise HTTPException(status_code=401, detail="User no longer exists")
+    return principal
 
 
 def require_roles(allowed_roles: list[UserRole]):

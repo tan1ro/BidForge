@@ -1,10 +1,12 @@
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import pytest
 from bson import ObjectId
 from fastapi import HTTPException
+from pymongo.errors import DuplicateKeyError
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
@@ -15,6 +17,10 @@ from models import AuctionStatus
 
 async def _noop_async(*_args, **_kwargs):
     return None
+
+
+def _req():
+    return SimpleNamespace(headers={})
 
 
 class FakeCursor:
@@ -207,7 +213,7 @@ async def test_submit_bid_trigger_bid_received_calls_extension(monkeypatch):
         validity="7 days",
     )
     user = auth.UserPrincipal(username="supplier", role=auth.UserRole.SUPPLIER)
-    await routes.submit_bid(rfq_id, bid, user)
+    await routes.submit_bid(rfq_id, bid, _req(), user)
     assert len(extension_calls) == 1
 
 
@@ -242,7 +248,7 @@ async def test_submit_bid_trigger_rank_change_calls_extension_only_on_rank_chang
         validity="7 days",
     )
     user = auth.UserPrincipal(username="supplier", role=auth.UserRole.SUPPLIER)
-    await routes.submit_bid(rfq_id, bid, user)
+    await routes.submit_bid(rfq_id, bid, _req(), user)
     assert len(extension_calls) == 1
 
 
@@ -277,7 +283,7 @@ async def test_submit_bid_trigger_l1_change_calls_extension_only_on_l1_change(mo
         validity="7 days",
     )
     user = auth.UserPrincipal(username="supplier", role=auth.UserRole.SUPPLIER)
-    await routes.submit_bid(rfq_id, non_l1_bid, user)
+    await routes.submit_bid(rfq_id, non_l1_bid, _req(), user)
     assert len(extension_calls) == 0
 
     # Carrier B now beats L1: extension expected.
@@ -289,7 +295,7 @@ async def test_submit_bid_trigger_l1_change_calls_extension_only_on_l1_change(mo
         transit_time=2,
         validity="7 days",
     )
-    await routes.submit_bid(rfq_id, l1_bid, user)
+    await routes.submit_bid(rfq_id, l1_bid, _req(), user)
     assert len(extension_calls) == 1
 
 
@@ -316,7 +322,7 @@ async def test_submit_bid_no_extension_outside_trigger_window(monkeypatch):
     )
     user = auth.UserPrincipal(username="supplier", role=auth.UserRole.SUPPLIER)
     old_close = rfq["current_close_time"]
-    await routes.submit_bid(rfq_id, bid, user)
+    await routes.submit_bid(rfq_id, bid, _req(), user)
     assert rfq["current_close_time"] == old_close
 
 
@@ -351,9 +357,11 @@ async def test_submit_bid_rejected_after_forced_close_and_status_transitions(mon
     )
     user = auth.UserPrincipal(username="supplier", role=auth.UserRole.SUPPLIER)
     with pytest.raises(HTTPException) as exc:
-        await routes.submit_bid(rfq_id, bid, user)
+        await routes.submit_bid(rfq_id, bid, _req(), user)
     assert exc.value.status_code == 400
-    assert "FORCE_CLOSED" in str(exc.value.detail)
+    detail = exc.value.detail
+    message = detail.get("message", "") if isinstance(detail, dict) else str(detail)
+    assert "Forced close time reached" in message
 
     # Explicit status transition assertion
     rfq["status"] = AuctionStatus.ACTIVE
@@ -361,3 +369,100 @@ async def test_submit_bid_rejected_after_forced_close_and_status_transitions(mon
     assert status == AuctionStatus.FORCE_CLOSED
     assert rfq["status"] == AuctionStatus.FORCE_CLOSED
     assert any(event[1] == "auction_closed" for event in logged_events)
+
+
+@pytest.mark.asyncio
+async def test_submit_bid_binds_identity_to_authenticated_supplier(monkeypatch):
+    now = datetime.now(timezone.utc)
+    rfq = make_rfq(now, extension_trigger="bid_received")
+    rfq_id = str(rfq["_id"])
+    rfqs_collection = FakeRFQsCollection({rfq["_id"]: rfq})
+    bids_collection = FakeBidsCollection([])
+
+    monkeypatch.setattr(routes, "rfqs_collection", rfqs_collection)
+    monkeypatch.setattr(routes, "bids_collection", bids_collection)
+    monkeypatch.setattr(routes, "log_activity", _noop_async)
+    monkeypatch.setattr(routes, "log_audit", _noop_async)
+    monkeypatch.setattr(routes.ws_manager, "broadcast", _noop_async)
+
+    bid = routes.BidCreate(
+        carrier_name="Spoofed Carrier",
+        freight_charges=900,
+        origin_charges=20,
+        destination_charges=10,
+        transit_time=2,
+        validity="7 days",
+    )
+    user = auth.UserPrincipal(username="real_supplier_user", role=auth.UserRole.SUPPLIER)
+    res = await routes.submit_bid(rfq_id, bid, _req(), user)
+
+    assert bids_collection.docs[0]["carrier_name"] == "real_supplier_user"
+    assert bids_collection.docs[0]["carrier_display_name"] == "Spoofed Carrier"
+    assert res["carrier_name"] == "Spoofed Carrier"
+
+
+@pytest.mark.asyncio
+async def test_submit_bid_duplicate_key_race_recovers_with_retry(monkeypatch):
+    now = datetime.now(timezone.utc)
+    rfq = make_rfq(now, extension_trigger="bid_received")
+    rfq_id = str(rfq["_id"])
+    rfqs_collection = FakeRFQsCollection({rfq["_id"]: rfq})
+
+    class RaceBidsCollection(FakeBidsCollection):
+        def __init__(self):
+            super().__init__([])
+            self.raise_duplicate_once = True
+
+        async def find_one(self, query, sort=None):
+            if query.get("rfq_id") == rfq_id and query.get("carrier_name") == "supplier" and self.raise_duplicate_once:
+                return None
+            return await super().find_one(query, sort=sort)
+
+        async def insert_one(self, doc):
+            if self.raise_duplicate_once:
+                self.raise_duplicate_once = False
+                # simulate competing request inserted winner doc first
+                self.docs.append(
+                    {
+                        "_id": "race-existing",
+                        "rfq_id": doc["rfq_id"],
+                        "carrier_name": doc["carrier_name"],
+                        "carrier_display_name": doc.get("carrier_display_name", ""),
+                        "freight_charges": 800.0,
+                        "origin_charges": 0.0,
+                        "destination_charges": 0.0,
+                        "total_price": 800.0,
+                        "transit_time": 2,
+                        "validity": "7 days",
+                        "vehicle_type": "",
+                        "capacity_tons": 0,
+                        "insurance_included": False,
+                        "rank": 1,
+                        "created_at": datetime.now(timezone.utc),
+                    }
+                )
+                raise DuplicateKeyError("duplicate key error")
+            return await super().insert_one(doc)
+
+    bids_collection = RaceBidsCollection()
+    monkeypatch.setattr(routes, "rfqs_collection", rfqs_collection)
+    monkeypatch.setattr(routes, "bids_collection", bids_collection)
+    monkeypatch.setattr(routes, "log_activity", _noop_async)
+    monkeypatch.setattr(routes, "log_audit", _noop_async)
+    monkeypatch.setattr(routes.ws_manager, "broadcast", _noop_async)
+
+    bid = routes.BidCreate(
+        carrier_name="Carrier Label",
+        freight_charges=700,
+        origin_charges=50,
+        destination_charges=50,
+        transit_time=2,
+        validity="7 days",
+    )
+    user = auth.UserPrincipal(username="supplier", role=auth.UserRole.SUPPLIER)
+    res = await routes.submit_bid(rfq_id, bid, _req(), user)
+    assert bids_collection.raise_duplicate_once is False
+    supplier_rows = [row for row in bids_collection.docs if row.get("carrier_name") == "supplier"]
+    assert len(supplier_rows) == 1
+    assert res["carrier_name"] == "Carrier Label"
+    assert res["total_price"] == 800.0

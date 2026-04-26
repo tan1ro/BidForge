@@ -126,6 +126,9 @@ function validateForm(form) {
   if (!Number.isFinite(minimumDecrement) || minimumDecrement < 0) {
     return "Minimum Decrement must be zero or greater";
   }
+  if (minimumDecrement >= startingPrice) {
+    return "Minimum Decrement must be lower than Starting Price to keep bidding possible";
+  }
   return "";
 }
 

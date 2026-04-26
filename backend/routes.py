@@ -2,11 +2,12 @@ import uuid
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from bson import ObjectId
-from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
+from pymongo.errors import DuplicateKeyError, OperationFailure
 
 from audit import log_audit
-from auth import UserPrincipal, UserRole, require_roles
-from database import rfqs_collection, bids_collection, activity_logs_collection
+from auth import UserPrincipal, UserRole, require_roles, user_from_token
+from database import rfqs_collection, bids_collection, activity_logs_collection, users_collection
 from models import (
     RFQCreate, RFQUpdate, RFQResponse, BidCreate, BidResponse,
     ActivityLogResponse, AuctionStatus, ExtensionTriggerType,
@@ -48,6 +49,7 @@ def serialize_rfq(doc: dict, lowest_bid=None, total_bids=0, winner_carrier=None,
         total_bids=total_bids,
         winner_carrier=winner_carrier,
         winning_bid_total=winning_bid_total,
+        server_time=datetime.now(timezone.utc),
         created_at=doc["created_at"],
     ).model_dump()
 
@@ -56,7 +58,7 @@ def serialize_bid(doc: dict) -> dict:
     return BidResponse(
         id=str(doc["_id"]),
         rfq_id=str(doc["rfq_id"]),
-        carrier_name=doc["carrier_name"],
+        carrier_name=doc.get("carrier_display_name") or doc["carrier_name"],
         freight_charges=doc["freight_charges"],
         origin_charges=doc["origin_charges"],
         destination_charges=doc["destination_charges"],
@@ -69,6 +71,10 @@ def serialize_bid(doc: dict) -> dict:
         rank=doc["rank"],
         created_at=doc["created_at"],
     ).model_dump()
+
+
+def _error(detail: str, *, code: str, status_code: int = 400):
+    raise HTTPException(status_code=status_code, detail={"code": code, "message": detail})
 
 
 def serialize_log(doc: dict) -> dict:
@@ -108,19 +114,20 @@ def compute_status(doc: dict) -> str:
         return AuctionStatus.ACTIVE
 
 
-async def recalculate_ranks(rfq_id: str):
+async def recalculate_ranks(rfq_id: str, *, session=None):
     """Recalculate all bid ranks for an RFQ based on total_price (ascending).
     For ties, the earlier bid gets the better rank.
     """
-    cursor = bids_collection.find({"rfq_id": rfq_id}).sort(
+    query = bids_collection.find({"rfq_id": rfq_id}, session=session) if session else bids_collection.find({"rfq_id": rfq_id})
+    cursor = query.sort(
         [("total_price", 1), ("created_at", 1)]
     )
     rank = 1
     async for bid in cursor:
-        await bids_collection.update_one(
-            {"_id": bid["_id"]},
-            {"$set": {"rank": rank}}
-        )
+        if session:
+            await bids_collection.update_one({"_id": bid["_id"]}, {"$set": {"rank": rank}}, session=session)
+        else:
+            await bids_collection.update_one({"_id": bid["_id"]}, {"$set": {"rank": rank}})
         rank += 1
 
 
@@ -145,7 +152,7 @@ def _pagination_meta(items: list, total: int, page: int, page_size: int):
     }
 
 
-async def check_and_extend_auction(rfq_id: str, rfq: dict, trigger_reason: str):
+async def check_and_extend_auction(rfq_id: str, rfq: dict, trigger_reason: str, *, trigger_type: str = "", bidder: str = ""):
     """Check if auction should be extended and apply extension if needed.
     
     IMPORTANT: Always re-fetch the RFQ to get the latest current_close_time,
@@ -182,7 +189,13 @@ async def check_and_extend_auction(rfq_id: str, rfq: dict, trigger_reason: str):
                 rfq_id,
                 "time_extended",
                 f"Auction extended by {extension_duration} min. New close: {new_close.strftime('%d %b %Y, %I:%M %p')} UTC. Reason: {trigger_reason}",
-                {"old_close": current_close.isoformat(), "new_close": new_close.isoformat(), "reason": trigger_reason}
+                {
+                    "old_close": current_close.isoformat(),
+                    "new_close": new_close.isoformat(),
+                    "reason": trigger_reason,
+                    "trigger_type": trigger_type,
+                    "bidder": bidder,
+                },
             )
             return True
     return False
@@ -280,6 +293,8 @@ async def create_rfq(
         raise HTTPException(400, "Starting price must be greater than zero")
     if rfq.minimum_decrement < 0:
         raise HTTPException(400, "Minimum decrement cannot be negative")
+    if rfq.minimum_decrement >= rfq.starting_price:
+        raise HTTPException(400, "Minimum decrement must be lower than starting price")
 
     ref_id = f"RFQ-{uuid.uuid4().hex[:8].upper()}"
 
@@ -601,6 +616,8 @@ async def update_rfq(
         raise HTTPException(400, "Starting price must be greater than zero")
     if float(merged.get("minimum_decrement", 0) or 0) < 0:
         raise HTTPException(400, "Minimum decrement cannot be negative")
+    if float(merged.get("minimum_decrement", 0) or 0) >= float(merged.get("starting_price", 0) or 0):
+        raise HTTPException(400, "Minimum decrement must be lower than starting price")
 
     await rfqs_collection.update_one({"_id": rfq["_id"]}, {"$set": payload})
     updated = await rfqs_collection.find_one({"_id": rfq["_id"]})
@@ -664,6 +681,7 @@ async def pause_rfq(
 async def submit_bid(
     rfq_id: str,
     bid: BidCreate,
+    request: Request,
     user: UserPrincipal = Depends(require_roles([UserRole.SUPPLIER])),
 ):
     """Submit a bid for an RFQ. Handles auction extension logic.
@@ -673,119 +691,149 @@ async def submit_bid(
     try:
         rfq = await rfqs_collection.find_one({"_id": ObjectId(rfq_id)})
     except Exception:
-        raise HTTPException(400, "Invalid RFQ ID")
+        _error("Invalid RFQ ID", code="invalid_rfq_id")
 
     if not rfq:
-        raise HTTPException(404, "RFQ not found")
+        _error("RFQ not found", code="rfq_not_found", status_code=404)
 
-    # Update status
+    now = datetime.now(timezone.utc)
+    forced_close = _ensure_tz(rfq["forced_close_time"])
+    current_close = _ensure_tz(rfq["current_close_time"])
+    if now >= forced_close:
+        _error("Forced close time reached. Bidding is permanently closed.", code="forced_close_reached")
+    if now >= current_close:
+        _error("Current bid close time elapsed. Auction is closed for bidding.", code="bid_close_elapsed")
+
     rfq["status"] = compute_status(rfq)
-    if rfq["status"] not in [AuctionStatus.ACTIVE]:
-        raise HTTPException(400, f"Auction is not active (status: {rfq['status']}). Cannot submit bid.")
+    if rfq["status"] != AuctionStatus.ACTIVE:
+        _error(f"Auction is not active (status: {rfq['status']}). Cannot submit bid.", code="auction_not_active")
 
     # Validate bid amounts
     if bid.freight_charges < 0 or bid.origin_charges < 0 or bid.destination_charges < 0:
-        raise HTTPException(400, "Charge values cannot be negative")
+        _error("Charge values cannot be negative", code="negative_charge")
 
     total_price = round(bid.freight_charges + bid.origin_charges + bid.destination_charges, 2)
 
     if total_price <= 0:
-        raise HTTPException(400, "Total bid amount must be greater than zero")
+        _error("Total bid amount must be greater than zero", code="non_positive_total")
 
-    # Get old L1 before modifying bids
-    old_l1 = await bids_collection.find_one(
-        {"rfq_id": rfq_id}, sort=[("total_price", 1)]
-    )
+    canonical_carrier = user.username
+    carrier_display_name = bid.carrier_name.strip() or canonical_carrier
+
+    old_l1 = await bids_collection.find_one({"rfq_id": rfq_id}, sort=[("total_price", 1)])
     old_l1_carrier = old_l1["carrier_name"] if old_l1 else None
     starting_price = float(rfq.get("starting_price", 0) or 0)
     minimum_decrement = float(rfq.get("minimum_decrement", 0) or 0)
 
     if starting_price > 0 and old_l1 is None and total_price > starting_price:
-        raise HTTPException(400, f"Bid must be less than or equal to starting price ₹{starting_price:,.2f}")
+        _error(
+            f"Bid must be less than or equal to starting price ₹{starting_price:,.2f}",
+            code="starting_price_exceeded",
+        )
     if old_l1 is not None and minimum_decrement > 0:
         required_max = round(float(old_l1["total_price"]) - minimum_decrement, 2)
+        if required_max <= 0:
+            _error(
+                "Minimum decrement is too high for the current lowest bid. Buyer must reduce minimum decrement.",
+                code="minimum_decrement_blocks_bidding",
+            )
         if total_price > required_max:
-            raise HTTPException(
-                400,
+            _error(
                 f"Bid must beat current lowest by at least ₹{minimum_decrement:,.2f}. Maximum allowed: ₹{required_max:,.2f}",
+                code="minimum_decrement_not_met",
             )
 
     # Get old ranks for rank-change detection
     old_ranks = {}
     async for b in bids_collection.find({"rfq_id": rfq_id}).sort("total_price", 1):
-        old_ranks[b["carrier_name"]] = b["rank"]
+        old_ranks[b["carrier_name"]] = b.get("rank", 0)
 
-    # Check if this carrier already has a bid — if so, update (revise) it
-    existing_bid = await bids_collection.find_one({
-        "rfq_id": rfq_id,
-        "carrier_name": bid.carrier_name,
-    })
+    bid_update_doc = {
+        "freight_charges": bid.freight_charges,
+        "origin_charges": bid.origin_charges,
+        "destination_charges": bid.destination_charges,
+        "total_price": total_price,
+        "transit_time": bid.transit_time,
+        "validity": bid.validity,
+        "vehicle_type": bid.vehicle_type,
+        "capacity_tons": bid.capacity_tons,
+        "insurance_included": bid.insurance_included,
+        "carrier_display_name": carrier_display_name,
+        "created_at": datetime.now(timezone.utc),
+    }
 
-    is_revision = False
-    old_total = None
-
-    if existing_bid:
-        is_revision = True
-        old_total = existing_bid["total_price"]
-        await bids_collection.update_one(
-            {"_id": existing_bid["_id"]},
-            {"$set": {
-                "freight_charges": bid.freight_charges,
-                "origin_charges": bid.origin_charges,
-                "destination_charges": bid.destination_charges,
-                "total_price": total_price,
-                "transit_time": bid.transit_time,
-                "validity": bid.validity,
-                "vehicle_type": bid.vehicle_type,
-                "capacity_tons": bid.capacity_tons,
-                "insurance_included": bid.insurance_included,
-                "created_at": datetime.now(timezone.utc),
-            }}
-        )
-        bid_id = existing_bid["_id"]
-    else:
+    async def _persist_bid(session=None):
+        existing = await bids_collection.find_one(
+            {"rfq_id": rfq_id, "carrier_name": canonical_carrier},
+            session=session,
+        ) if session else await bids_collection.find_one({"rfq_id": rfq_id, "carrier_name": canonical_carrier})
+        if existing:
+            if session:
+                await bids_collection.update_one({"_id": existing["_id"]}, {"$set": bid_update_doc}, session=session)
+            else:
+                await bids_collection.update_one({"_id": existing["_id"]}, {"$set": bid_update_doc})
+            return existing["_id"], True, existing["total_price"]
         bid_doc = {
             "rfq_id": rfq_id,
-            "carrier_name": bid.carrier_name,
-            "freight_charges": bid.freight_charges,
-            "origin_charges": bid.origin_charges,
-            "destination_charges": bid.destination_charges,
-            "total_price": total_price,
-            "transit_time": bid.transit_time,
-            "validity": bid.validity,
-            "vehicle_type": bid.vehicle_type,
-            "capacity_tons": bid.capacity_tons,
-            "insurance_included": bid.insurance_included,
-            "rank": 0,  # will be recalculated
-            "created_at": datetime.now(timezone.utc),
+            "carrier_name": canonical_carrier,
+            **bid_update_doc,
+            "rank": 0,
         }
-        result = await bids_collection.insert_one(bid_doc)
-        bid_id = result.inserted_id
+        result = await bids_collection.insert_one(bid_doc, session=session) if session else await bids_collection.insert_one(bid_doc)
+        return result.inserted_id, False, None
 
-    # Recalculate ranks
-    await recalculate_ranks(rfq_id)
+    bid_id = None
+    is_revision = False
+    old_total = None
+    max_attempts = 3
+    for _ in range(max_attempts):
+        try:
+            tx_session = None
+            try:
+                tx_session = await rfqs_collection.database.client.start_session()
+                async with tx_session.start_transaction():
+                    bid_id, is_revision, old_total = await _persist_bid(session=tx_session)
+                    await recalculate_ranks(rfq_id, session=tx_session)
+            except (OperationFailure, NotImplementedError, AttributeError, TypeError):
+                bid_id, is_revision, old_total = await _persist_bid()
+                await recalculate_ranks(rfq_id)
+            finally:
+                if tx_session is not None:
+                    await tx_session.end_session()
+            break
+        except DuplicateKeyError:
+            # Another request inserted same supplier bid concurrently; retry as update path.
+            continue
+    if bid_id is None:
+        _error("Unable to submit bid due to concurrent updates. Please retry.", code="bid_concurrency_conflict", status_code=409)
 
     # Log bid submission
     if is_revision:
         await log_activity(
             rfq_id,
             "bid_submitted",
-            f"{bid.carrier_name} revised bid: ₹{total_price:,.2f} (was ₹{old_total:,.2f}). Freight: ₹{bid.freight_charges:,.2f}, Origin: ₹{bid.origin_charges:,.2f}, Dest: ₹{bid.destination_charges:,.2f}, Vehicle: {bid.vehicle_type or 'N/A'}, Capacity: {bid.capacity_tons:g} tons, Insurance: {'Yes' if bid.insurance_included else 'No'}",
-            {"carrier": bid.carrier_name, "total_price": total_price, "old_total": old_total, "is_revision": True}
+            f"{carrier_display_name} revised bid: ₹{total_price:,.2f} (was ₹{old_total:,.2f}). Freight: ₹{bid.freight_charges:,.2f}, Origin: ₹{bid.origin_charges:,.2f}, Dest: ₹{bid.destination_charges:,.2f}, Vehicle: {bid.vehicle_type or 'N/A'}, Capacity: {bid.capacity_tons:g} tons, Insurance: {'Yes' if bid.insurance_included else 'No'}",
+            {"carrier": carrier_display_name, "supplier_username": canonical_carrier, "total_price": total_price, "old_total": old_total, "is_revision": True}
         )
     else:
         await log_activity(
             rfq_id,
             "bid_submitted",
-            f"{bid.carrier_name} submitted bid: ₹{total_price:,.2f} (Freight: ₹{bid.freight_charges:,.2f}, Origin: ₹{bid.origin_charges:,.2f}, Dest: ₹{bid.destination_charges:,.2f}, Vehicle: {bid.vehicle_type or 'N/A'}, Capacity: {bid.capacity_tons:g} tons, Insurance: {'Yes' if bid.insurance_included else 'No'})",
-            {"carrier": bid.carrier_name, "total_price": total_price}
+            f"{carrier_display_name} submitted bid: ₹{total_price:,.2f} (Freight: ₹{bid.freight_charges:,.2f}, Origin: ₹{bid.origin_charges:,.2f}, Dest: ₹{bid.destination_charges:,.2f}, Vehicle: {bid.vehicle_type or 'N/A'}, Capacity: {bid.capacity_tons:g} tons, Insurance: {'Yes' if bid.insurance_included else 'No'})",
+            {"carrier": carrier_display_name, "supplier_username": canonical_carrier, "total_price": total_price}
         )
 
     # Check extension triggers
     trigger = rfq["extension_trigger"]
 
     if trigger == ExtensionTriggerType.BID_RECEIVED:
-        await check_and_extend_auction(rfq_id, rfq, f"Bid received from {bid.carrier_name}")
+        await check_and_extend_auction(
+            rfq_id,
+            rfq,
+            f"Bid received from {carrier_display_name}",
+            trigger_type="bid_received",
+            bidder=canonical_carrier,
+        )
 
     elif trigger == ExtensionTriggerType.RANK_CHANGE:
         # Check if any rank changed
@@ -793,7 +841,13 @@ async def submit_bid(
         async for b in bids_collection.find({"rfq_id": rfq_id}).sort("total_price", 1):
             new_ranks[b["carrier_name"]] = b["rank"]
         if new_ranks != old_ranks:
-            await check_and_extend_auction(rfq_id, rfq, f"Supplier rank changed after bid from {bid.carrier_name}")
+            await check_and_extend_auction(
+                rfq_id,
+                rfq,
+                f"Supplier rank changed after bid from {carrier_display_name}",
+                trigger_type="rank_change",
+                bidder=canonical_carrier,
+            )
 
     elif trigger == ExtensionTriggerType.L1_CHANGE:
         # Check if L1 changed
@@ -802,7 +856,13 @@ async def submit_bid(
         )
         new_l1_carrier = new_l1["carrier_name"] if new_l1 else None
         if new_l1_carrier != old_l1_carrier:
-            await check_and_extend_auction(rfq_id, rfq, f"L1 changed: {old_l1_carrier} → {new_l1_carrier}")
+            await check_and_extend_auction(
+                rfq_id,
+                rfq,
+                f"L1 changed: {old_l1_carrier} → {new_l1_carrier}",
+                trigger_type="l1_change",
+                bidder=canonical_carrier,
+            )
 
     # Reload bid with updated rank
     bid_doc = await bids_collection.find_one({"_id": bid_id})
@@ -811,7 +871,8 @@ async def submit_bid(
         {
             "type": "bid_updated",
             "rfq_id": rfq_id,
-            "carrier_name": bid.carrier_name,
+            "carrier_name": carrier_display_name,
+            "supplier_username": canonical_carrier,
             "total_price": bid_doc["total_price"],
             "rank": bid_doc["rank"],
         },
@@ -822,7 +883,8 @@ async def submit_bid(
         role=user.role.value,
         resource_type="bid",
         resource_id=str(bid_id),
-        metadata={"rfq_id": rfq_id, "carrier_name": bid.carrier_name},
+        metadata={"rfq_id": rfq_id, "carrier_name": carrier_display_name, "supplier_username": canonical_carrier},
+        request_id=request.headers.get("x-request-id", ""),
     )
     return serialize_bid(bid_doc)
 
@@ -899,7 +961,20 @@ async def get_activity(
 
 @router.websocket("/ws/rfqs/{rfq_id}")
 async def rfq_socket(websocket: WebSocket, rfq_id: str):
-    await ws_manager.connect(rfq_id, websocket)
+    subprotocols = websocket.scope.get("subprotocols", [])
+    token = subprotocols[1] if len(subprotocols) >= 2 and subprotocols[0] == "token" else None
+    if not token:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Missing auth token")
+        return
+    try:
+        principal = user_from_token(token)
+        user_doc = await users_collection.find_one({"username": principal.username})
+        if not user_doc:
+            raise HTTPException(status_code=401, detail="User no longer exists")
+    except HTTPException:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Invalid auth token")
+        return
+    await ws_manager.connect(rfq_id, websocket, subprotocol="token")
     try:
         while True:
             await websocket.receive_text()

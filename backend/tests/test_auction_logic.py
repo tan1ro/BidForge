@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import pytest
 from bson import ObjectId
@@ -70,6 +71,16 @@ class FrozenDateTime:
         if tz is not None:
             return cls.now_value.astimezone(tz)
         return cls.now_value
+
+
+def _detail_message(detail):
+    if isinstance(detail, dict):
+        return detail.get("message", "")
+    return str(detail)
+
+
+def _req():
+    return SimpleNamespace(headers={})
 
 
 def make_active_rfq(now):
@@ -245,9 +256,9 @@ async def test_submit_bid_rejects_when_auction_not_active(monkeypatch):
     user = auth.UserPrincipal(username="supplier1", role=auth.UserRole.SUPPLIER)
 
     with pytest.raises(HTTPException) as exc:
-        await routes.submit_bid(rfq_id, bid, user)
+        await routes.submit_bid(rfq_id, bid, _req(), user)
     assert exc.value.status_code == 400
-    assert "Auction is not active" in str(exc.value.detail)
+    assert "Current bid close time elapsed" in _detail_message(exc.value.detail)
 
 
 @pytest.mark.asyncio
@@ -272,9 +283,9 @@ async def test_submit_bid_rejects_negative_components(monkeypatch):
     user = auth.UserPrincipal(username="supplier1", role=auth.UserRole.SUPPLIER)
 
     with pytest.raises(HTTPException) as exc:
-        await routes.submit_bid(rfq_id, bid, user)
+        await routes.submit_bid(rfq_id, bid, _req(), user)
     assert exc.value.status_code == 400
-    assert exc.value.detail == "Charge values cannot be negative"
+    assert _detail_message(exc.value.detail) == "Charge values cannot be negative"
 
 
 @pytest.mark.asyncio
@@ -297,9 +308,9 @@ async def test_submit_bid_rejects_non_positive_total(monkeypatch):
     user = auth.UserPrincipal(username="supplier1", role=auth.UserRole.SUPPLIER)
 
     with pytest.raises(HTTPException) as exc:
-        await routes.submit_bid(rfq_id, bid, user)
+        await routes.submit_bid(rfq_id, bid, _req(), user)
     assert exc.value.status_code == 400
-    assert exc.value.detail == "Total bid amount must be greater than zero"
+    assert _detail_message(exc.value.detail) == "Total bid amount must be greater than zero"
 
 
 @pytest.mark.asyncio

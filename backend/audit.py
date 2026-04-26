@@ -10,7 +10,11 @@ async def log_audit(
     resource_type: str,
     resource_id: str | None = None,
     metadata: dict | None = None,
+    request_id: str | None = None,
 ):
+    data = metadata.copy() if metadata else {}
+    if request_id:
+        data["request_id"] = request_id
     await audit_logs_collection.insert_one(
         {
             "action": action,
@@ -18,7 +22,7 @@ async def log_audit(
             "role": role,
             "resource_type": resource_type,
             "resource_id": resource_id,
-            "metadata": metadata or {},
+            "metadata": data,
             "created_at": datetime.now(timezone.utc),
         }
     )

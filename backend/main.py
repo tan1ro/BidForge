@@ -1,6 +1,8 @@
 from contextlib import asynccontextmanager
+import uuid
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from auth_routes import router as auth_router
 from config import settings
@@ -8,6 +10,15 @@ from database import init_db
 from rate_limit import InMemoryRateLimiter
 from routes import router
 from scheduler import auction_scheduler
+
+
+class RequestIDMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        request_id = request.headers.get("x-request-id", str(uuid.uuid4()))
+        request.state.request_id = request_id
+        response = await call_next(request)
+        response.headers["x-request-id"] = request_id
+        return response
 
 
 @asynccontextmanager
@@ -35,6 +46,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(InMemoryRateLimiter, limit_per_minute=settings.rate_limit_per_minute)
+app.add_middleware(RequestIDMiddleware)
 
 app.include_router(router)
 app.include_router(auth_router)

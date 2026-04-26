@@ -79,8 +79,8 @@ function openBase64File(base64, contentType, fileName) {
   anchor.click();
 }
 
-function getTimeRemaining(targetDate) {
-  const diff = new Date(targetDate) - new Date();
+function getTimeRemaining(targetDate, nowMs = Date.now()) {
+  const diff = new Date(targetDate).getTime() - nowMs;
   if (diff <= 0) return { expired: true, text: "Expired" };
   const hours = Math.floor(diff / (1000 * 60 * 60));
   const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
@@ -121,6 +121,7 @@ export default function AuctionDetail({ role }) {
   const [busyAction, setBusyAction] = useState(false);
   const [timer, setTimer] = useState({ text: "--:--:--", urgent: false });
   const [toast, setToast] = useState(null);
+  const [serverOffsetMs, setServerOffsetMs] = useState(0);
 
   const loadData = useCallback(async () => {
     try {
@@ -131,6 +132,9 @@ export default function AuctionDetail({ role }) {
         getActivity(id, { page: activityMeta.page, page_size: activityMeta.page_size }),
       ]);
       setRfq(rfqRes.data);
+      if (rfqRes.data?.server_time) {
+        setServerOffsetMs(new Date(rfqRes.data.server_time).getTime() - Date.now());
+      }
       const bidsPayload = Array.isArray(bidsRes.data) ? { items: bidsRes.data, total: bidsRes.data.length, page: 1, page_size: 10 } : bidsRes.data;
       const activityPayload = Array.isArray(actRes.data) ? { items: actRes.data, total: actRes.data.length, page: 1, page_size: 10 } : actRes.data;
       setBids(bidsPayload.items || []);
@@ -146,20 +150,23 @@ export default function AuctionDetail({ role }) {
 
   useEffect(() => {
     const bootstrap = setTimeout(() => void loadData(), 0);
-    const ws = new WebSocket(`ws://localhost:8000/api/ws/rfqs/${id}`);
+    const token = typeof localStorage?.getItem === "function" ? localStorage.getItem("auth_token") : null;
+    const ws = token ? new WebSocket(`ws://localhost:8000/api/ws/rfqs/${id}`, ["token", token]) : null;
     let isEffectActive = true;
-    ws.onopen = () => {
-      if (!isEffectActive) ws.close();
-    };
-    ws.onmessage = () => {
-      if (isEffectActive) void loadData();
-    };
+    if (ws) {
+      ws.onopen = () => {
+        if (!isEffectActive) ws.close();
+      };
+      ws.onmessage = () => {
+        if (isEffectActive) void loadData();
+      };
+    }
     const interval = setInterval(loadData, 20000);
     return () => {
       isEffectActive = false;
       clearTimeout(bootstrap);
       clearInterval(interval);
-      if (ws.readyState === WebSocket.OPEN) ws.close();
+      if (ws && ws.readyState === WebSocket.OPEN) ws.close();
     };
   }, [loadData, id]);
 
@@ -167,13 +174,13 @@ export default function AuctionDetail({ role }) {
     if (!rfq) return;
     const tick = () => {
       const targetDate = rfq.status === "upcoming" ? rfq.bid_start_time : rfq.current_close_time;
-      const remaining = getTimeRemaining(targetDate);
+      const remaining = getTimeRemaining(targetDate, Date.now() + serverOffsetMs);
       setTimer(remaining.expired ? { text: rfq.status === "upcoming" ? "Starting..." : "Closing...", urgent: false, expired: true } : remaining);
     };
     tick();
     const interval = setInterval(tick, 1000);
     return () => clearInterval(interval);
-  }, [rfq]);
+  }, [rfq, serverOffsetMs]);
 
   function showToastMessage(message, type = "success") {
     setToast({ message, type });
@@ -197,6 +204,8 @@ export default function AuctionDetail({ role }) {
   }
   if (!rfq) return <Alert severity="error">Auction not found.</Alert>;
   const canManageAuction = role === "buyer" && (rfq.status === "upcoming" || bids.length === 0);
+  const lowestTotal = bids.length > 0 ? Math.min(...bids.map((b) => Number(b.total_price || 0))) : Number(rfq.starting_price || 0);
+  const decrementBlocksBidding = Number(rfq.minimum_decrement || 0) >= lowestTotal && lowestTotal > 0;
 
   return (
     <Stack spacing={2.5}>
@@ -264,6 +273,11 @@ export default function AuctionDetail({ role }) {
           )}
         </Stack>
       </Stack>
+      {decrementBlocksBidding && (
+        <Alert severity="warning">
+          Current minimum decrement may block further valid bids. Reduce minimum decrement below current lowest bid.
+        </Alert>
+      )}
 
       {(rfq.status === "active" || rfq.status === "upcoming") && (
         <Card sx={{ background: `linear-gradient(120deg, ${alpha(theme.palette.primary.main, 0.16)} 0%, ${alpha(theme.palette.secondary.main, 0.14)} 100%)` }}>

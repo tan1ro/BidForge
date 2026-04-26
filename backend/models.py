@@ -96,13 +96,14 @@ class RFQResponse(BaseModel):
     total_bids: int = 0
     winner_carrier: Optional[str] = None
     winning_bid_total: Optional[float] = None
+    server_time: datetime
     created_at: datetime
 
 
 # ─── Bid Models ───
 
 class BidCreate(BaseModel):
-    carrier_name: Annotated[str, StringConstraints(min_length=2, max_length=80, strip_whitespace=True)]
+    carrier_name: Annotated[str, StringConstraints(min_length=0, max_length=80, strip_whitespace=True)] = ""
     freight_charges: float = Field(ge=0)
     origin_charges: float = Field(ge=0)
     destination_charges: float = Field(ge=0)

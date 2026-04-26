@@ -104,6 +104,21 @@ async def test_authenticate_user_wrong_password_returns_none(monkeypatch):
     assert authed is None
 
 
-def test_hash_password_uses_bcrypt_sha256_prefix():
+def test_hash_password_uses_pbkdf2_prefix():
     password_hash = auth.hash_password("secret123")
-    assert password_hash.startswith("$bcrypt-sha256$")
+    assert password_hash.startswith("pbkdf2_sha256$")
+
+
+def test_verify_password_with_invalid_hash_format_returns_false():
+    assert auth.verify_password("secret123", "not-a-valid-hash") is False
+
+
+def test_user_from_token_invalid_payload_rejected():
+    bad_token = auth.jwt.encode(
+        {"sub": "alice", "role": "admin"},
+        auth.settings.jwt_secret,
+        algorithm=auth.settings.jwt_algorithm,
+    )
+    with pytest.raises(HTTPException) as exc:
+        auth.user_from_token(bad_token)
+    assert exc.value.status_code == 401

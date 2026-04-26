@@ -283,14 +283,17 @@ Activity visibility decision: **both buyer and supplier can view activity logs**
 ## Realtime + Scheduler
 
 - Frontend detail page subscribes to websocket updates (`/api/ws/rfqs/{id}`) for bid/status changes.
+- Websocket handshake now requires JWT via subprotocol (`["token", "<jwt>"]`); unauthenticated connections are rejected.
 - Backend scheduler runs every 5s to proactively update auction status transitions (`upcoming -> active -> closed/force_closed`) even without read traffic.
 
 ## Security Hardening Included
 
 - JWT-based access control with route guards.
+- Bid ownership is bound to the authenticated supplier identity (`user.username`) instead of trusting client-provided bidder identity.
 - In-memory per-IP+path rate limiting middleware.
 - Environment-driven CORS (`CORS_ORIGINS`).
 - Structured audit logging (`audit_logs` collection) for key actions.
+- Request correlation is supported via `X-Request-ID` header propagation.
 
 ## Pagination
 
@@ -301,6 +304,14 @@ Activity visibility decision: **both buyer and supplier can view activity logs**
   - `items`, `total`, `page`, `page_size`, `has_next`
 - Closed filter semantics:
   - `GET /api/rfqs?status=closed` returns both `closed` and `force_closed` server-side.
+
+## Hardening Notes
+
+- `bids` collection enforces one active quote per supplier per RFQ using unique index: `("rfq_id", 1), ("carrier_name", 1)`.
+- Bid submission includes deterministic close-window guards with structured error codes for force-close and current-close violations.
+- Bid submission uses transaction-first persistence with retry fallback for non-transactional Mongo deployments.
+- `minimum_decrement` must remain lower than `starting_price` to avoid impossible bidding progression.
+- Auction detail countdown uses backend `server_time` offset to reduce client clock drift effects.
 
 ## Testing
 

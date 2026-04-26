@@ -7,8 +7,11 @@ class ConnectionManager:
     def __init__(self):
         self._rooms: dict[str, set[WebSocket]] = defaultdict(set)
 
-    async def connect(self, rfq_id: str, websocket: WebSocket):
-        await websocket.accept()
+    async def connect(self, rfq_id: str, websocket: WebSocket, subprotocol: str | None = None):
+        if subprotocol:
+            await websocket.accept(subprotocol=subprotocol)
+        else:
+            await websocket.accept()
         self._rooms[rfq_id].add(websocket)
 
     def disconnect(self, rfq_id: str, websocket: WebSocket):

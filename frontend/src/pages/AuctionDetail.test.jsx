@@ -21,6 +21,7 @@ vi.mock("../api", () => ({
       extension_trigger: "bid_received",
       total_bids: 1,
       lowest_bid: 1200,
+      server_time: new Date().toISOString(),
     },
   })),
   getBids: vi.fn(async () => ({
@@ -44,6 +45,37 @@ vi.mock("../api", () => ({
 }));
 
 describe("AuctionDetail", () => {
+  it("opens websocket with auth token subprotocol", async () => {
+    const originalLocalStorage = global.localStorage;
+    const socketInstances = [];
+    const wsMock = vi.fn(function WebSocketMock(url, protocols) {
+      this.url = url;
+      this.protocols = protocols;
+      this.readyState = 1;
+      this.close = vi.fn();
+      socketInstances.push(this);
+      setTimeout(() => this.onopen?.(), 0);
+    });
+    wsMock.OPEN = 1;
+    global.WebSocket = wsMock;
+    global.localStorage = { getItem: vi.fn(() => "jwt-token") };
+
+    render(
+      <MemoryRouter initialEntries={["/auction/rfq-1"]}>
+        <Routes>
+          <Route path="/auction/:id" element={<AuctionDetail role="supplier" />} />
+        </Routes>
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(socketInstances.length).toBeGreaterThan(0);
+    });
+    expect(socketInstances[0].url).toContain("/api/ws/rfqs/rfq-1");
+    expect(socketInstances[0].protocols).toEqual(["token", "jwt-token"]);
+    global.localStorage = originalLocalStorage;
+  });
+
   it("renders auction title and bid table", async () => {
     render(
       <MemoryRouter initialEntries={["/auction/rfq-1"]}>

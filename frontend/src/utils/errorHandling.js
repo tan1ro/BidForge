@@ -5,6 +5,9 @@ export function parseApiError(error, fallbackMessage = "Something went wrong. Pl
   if (typeof detail === "string" && detail.trim()) {
     return detail;
   }
+  if (detail && typeof detail === "object" && typeof detail.message === "string" && detail.message.trim()) {
+    return detail.message;
+  }
 
   if (Array.isArray(detail) && detail.length > 0) {
     const firstDetail = detail[0];
