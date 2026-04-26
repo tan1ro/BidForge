@@ -15,6 +15,10 @@ class AppErrorBoundary extends Component {
     console.error("Unhandled UI error:", error);
   }
 
+  handleGoToSafePage = () => {
+    window.location.assign("/500");
+  };
+
   handleReload = () => {
     window.location.reload();
   };
@@ -31,6 +35,9 @@ class AppErrorBoundary extends Component {
             <Stack direction="row" spacing={1.2} justifyContent="center">
               <Button variant="contained" onClick={this.handleReload}>
                 Reload app
+              </Button>
+              <Button variant="outlined" onClick={this.handleGoToSafePage}>
+                Open error page
               </Button>
             </Stack>
           </Stack>

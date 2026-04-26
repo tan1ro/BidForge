@@ -1,18 +1,43 @@
 import { Link as RouterLink } from "react-router-dom";
-import { Box, Button, Card, CardContent, Chip, Container, Stack, Typography } from "@mui/material";
+import { Box, Button, Chip, Container, Stack, Typography } from "@mui/material";
+import GavelOutlinedIcon from "@mui/icons-material/GavelOutlined";
+import SecurityOutlinedIcon from "@mui/icons-material/SecurityOutlined";
+import TimelineOutlinedIcon from "@mui/icons-material/TimelineOutlined";
+import InsightsOutlinedIcon from "@mui/icons-material/InsightsOutlined";
+import AutoAwesomeOutlinedIcon from "@mui/icons-material/AutoAwesomeOutlined";
 import bidForgeLogo from "../assets/bidforge-logo.svg";
 
 export default function Home() {
+  const features = [
+    {
+      icon: <GavelOutlinedIcon color="primary" fontSize="small" />,
+      title: "Live Auction Control",
+      description: "Run real-time RFQ bidding with clear rank visibility for faster negotiations.",
+    },
+    {
+      icon: <SecurityOutlinedIcon color="primary" fontSize="small" />,
+      title: "Secure Role Access",
+      description: "Protect buyer and supplier actions with role-based access and authenticated workflows.",
+    },
+    {
+      icon: <TimelineOutlinedIcon color="primary" fontSize="small" />,
+      title: "Timeline Intelligence",
+      description: "Apply extension rules and auction windows with predictable event timelines.",
+    },
+    {
+      icon: <InsightsOutlinedIcon color="primary" fontSize="small" />,
+      title: "Decision Analytics",
+      description: "Use bid behavior insights and auction metrics to make stronger procurement decisions.",
+    },
+  ];
+
   return (
     <Box
       sx={(theme) => ({
         position: "relative",
         overflow: "hidden",
         minHeight: "calc(100vh - 72px)",
-        display: "flex",
-        alignItems: "center",
-        py: { xs: 3, md: 4 },
-        px: { xs: 2, md: 4 },
+        py: { xs: 5, md: 8 },
         "&::before": {
           content: '""',
           position: "absolute",
@@ -29,48 +54,98 @@ export default function Home() {
         },
       })}
     >
-      <Container maxWidth="lg" sx={{ position: "relative" }}>
-        <Card sx={{ maxWidth: 980, mx: "auto" }}>
-          <CardContent sx={{ p: { xs: 3, md: 4 } }}>
-            <Stack direction={{ xs: "column", md: "row" }} spacing={{ xs: 3, md: 5 }} alignItems={{ md: "center" }}>
-              <Box sx={{ flex: 1 }}>
-                <Stack direction="row" spacing={1.2} alignItems="center" sx={{ mb: 1.5 }}>
-                  <Box component="img" src={bidForgeLogo} alt="BidForge logo" sx={{ width: 38, height: 38, borderRadius: 1 }} />
-                  <Chip size="small" label="British Auction RFQ Platform" color="secondary" />
-                </Stack>
-                <Typography variant="h4" sx={{ fontFamily: "Space Grotesk, Inter, sans-serif" }}>
-                  Welcome to BidForge
-                </Typography>
-                <Typography color="text.secondary" sx={{ mt: 1.25, maxWidth: 600 }}>
-                  Run British Auction RFQs with live bids, role-based workflows, and clear auction timelines.
-                </Typography>
-                <Stack spacing={0.6} sx={{ mt: 2 }}>
-                  <Typography color="text.secondary">- Buyer and supplier authentication</Typography>
-                  <Typography color="text.secondary">- Real-time RFQ bidding</Typography>
-                  <Typography color="text.secondary">- Auction analytics dashboard</Typography>
-                </Stack>
-                <Typography variant="body2" color="text.secondary" sx={{ mt: 2.2 }}>
-                  This app was developed by NandeeshK
-                </Typography>
-              </Box>
-              <Stack spacing={1.2} sx={{ width: "100%", maxWidth: 240, ml: { md: "auto" } }}>
-                <Button component={RouterLink} to="/login" size="large" variant="contained" fullWidth>
+      <Container
+        maxWidth={false}
+        sx={{
+          position: "relative",
+          px: { xs: 2.5, sm: 4, md: 8, lg: 12, xl: 18 },
+        }}
+      >
+        <Stack spacing={{ xs: 5, md: 7 }}>
+          <Stack direction={{ xs: "column", lg: "row" }} spacing={{ xs: 4, lg: 8 }} alignItems={{ lg: "center" }}>
+            <Box sx={{ flex: 1 }}>
+              <Stack direction="row" spacing={1.2} alignItems="center" sx={{ mb: 1.5 }}>
+                <Box component="img" src={bidForgeLogo} alt="BidForge logo" sx={{ width: 42, height: 42, borderRadius: 1 }} />
+                <Chip label="British Auction RFQ Platform" size="small" color="secondary" />
+              </Stack>
+              <Typography variant="h2" sx={{ fontSize: { xs: "2rem", md: "3rem" }, lineHeight: 1.1, maxWidth: 760 }}>
+                Run procurement auctions faster with BidForge
+              </Typography>
+              <Typography color="text.secondary" sx={{ mt: 1.8, maxWidth: 700 }}>
+                Launch RFQs, receive supplier bids in real time, and close every auction with transparent rules and
+                decision-ready data.
+              </Typography>
+              <Stack direction={{ xs: "column", sm: "row" }} spacing={1.2} sx={{ mt: 3 }}>
+                <Button component={RouterLink} to="/login" size="large" variant="contained">
                   Login
                 </Button>
-                <Button component={RouterLink} to="/signup" size="large" variant="outlined" fullWidth>
+                <Button component={RouterLink} to="/signup" size="large" variant="outlined">
                   Signup
                 </Button>
-                <Button href="https://nandeesh-kantli.vercel.app/" target="_blank" rel="noreferrer" fullWidth>
-                  View Portfolio
-                </Button>
               </Stack>
-            </Stack>
-          </CardContent>
-        </Card>
-        <Stack sx={{ mt: 1.5 }} alignItems="center">
-          <Typography variant="caption" color="text.secondary">
-            Designed to match the clean BidForge login experience
-          </Typography>
+            </Box>
+            <Box
+              sx={{
+                flex: 1,
+                width: "100%",
+                p: { xs: 2.5, md: 3.5 },
+                borderRadius: 2,
+                border: "1px solid",
+                borderColor: "divider",
+                bgcolor: "background.paper",
+              }}
+            >
+              <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1.6 }}>
+                <AutoAwesomeOutlinedIcon color="secondary" fontSize="small" />
+                <Typography variant="h6">Core Capabilities</Typography>
+              </Stack>
+              <Typography color="text.secondary" sx={{ mb: 2 }}>
+                Designed with a modern landing-page style similar to top AI product sites: clear value, trust signals,
+                and feature clarity.
+              </Typography>
+              <Stack spacing={1.6}>
+                {features.map((item) => (
+                  <Stack key={item.title} direction="row" spacing={1.2} alignItems="flex-start">
+                    <Box sx={{ mt: 0.25 }}>{item.icon}</Box>
+                    <Box>
+                      <Typography variant="subtitle2">{item.title}</Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        {item.description}
+                      </Typography>
+                    </Box>
+                  </Stack>
+                ))}
+              </Stack>
+            </Box>
+          </Stack>
+
+          <Box
+            sx={{
+              p: { xs: 2.5, md: 3 },
+              borderRadius: 2,
+              border: "1px solid",
+              borderColor: "divider",
+              bgcolor: "background.paper",
+            }}
+          >
+            <Typography variant="h6">About Nandeesh Kantli</Typography>
+            <Typography color="text.secondary" sx={{ mt: 1 }}>
+              Nandeesh Kantli is a student at RV University and this app was developed to demonstrate a
+              production-style British Auction RFQ workflow with clean UX and practical business features.
+            </Typography>
+            <Typography variant="subtitle2" sx={{ mt: 2 }}>
+              Core Skills
+            </Typography>
+            <Typography color="text.secondary" sx={{ mt: 0.8 }}>
+              - Full Stack Development (React, FastAPI, REST APIs)
+            </Typography>
+            <Typography color="text.secondary">
+              - AI/ML Fundamentals and Applied Problem Solving
+            </Typography>
+            <Typography color="text.secondary">
+              - Real-time systems, workflows, and product-focused UI/UX
+            </Typography>
+          </Box>
         </Stack>
       </Container>
     </Box>
