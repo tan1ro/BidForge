@@ -1,0 +1,50 @@
+# Environment files
+.env
+.env.local
+.env.development
+.env.development.local
+.env.test
+.env.test.local
+.env.production
+.env.production.local
+
+# App-specific env files
+backend/.env
+backend/.env.local
+backend/.env.development.local
+backend/.env.test.local
+backend/.env.production.local
+frontend/.env
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+
+# Dependencies and build artifacts
+node_modules
+dist
+build
+backend/node_modules
+backend/dist
+backend/build
+frontend/node_modules
+frontend/dist
+frontend/build
+
+# Python caches/artifacts
+__pycache__/
+*.pyc
+.pytest_cache
+backend/.pytest_cache
+frontend/.pytest_cache
+
+# IDE/OS files
+.DS_Store
+.vscode
+.idea
+backend/.DS_Store
+backend/.vscode
+backend/.idea
+frontend/.DS_Store
+frontend/.vscode
+frontend/.idea

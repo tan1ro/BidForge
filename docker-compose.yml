@@ -1,0 +1,37 @@
+services:
+  mongo:
+    image: mongo:7
+    container_name: british-auction-mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+  backend:
+    build:
+      context: ./backend
+    container_name: british-auction-backend
+    environment:
+      - MONGODB_URL=mongodb://mongo:27017
+      - DATABASE_NAME=british_auction_rfq
+      - CORS_ORIGINS=http://localhost:5173
+      - JWT_SECRET=change-me-in-production
+      - JWT_ALGORITHM=HS256
+      - JWT_EXPIRES_MINUTES=120
+      - RATE_LIMIT_PER_MINUTE=120
+    ports:
+      - "8000:8000"
+    depends_on:
+      - mongo
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: british-auction-frontend
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+
+volumes:
+  mongo_data:
