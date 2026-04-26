@@ -1,7 +1,9 @@
 import asyncio
 
+from models import AuctionStatus
 from database import rfqs_collection
 from routes import _update_status_with_logging
+from scheduler_lock import try_acquire_scheduler_lock
 from ws_manager import ws_manager
 
 
@@ -27,7 +29,19 @@ class AuctionScheduler:
 
     async def _run_loop(self):
         while self._running:
-            cursor = rfqs_collection.find()
+            if not await try_acquire_scheduler_lock():
+                await asyncio.sleep(2)
+                continue
+            q = {
+                "status": {
+                    "$in": [
+                        AuctionStatus.UPCOMING.value,
+                        AuctionStatus.ACTIVE.value,
+                        AuctionStatus.PAUSED.value,
+                    ]
+                }
+            }
+            cursor = rfqs_collection.find(q)
             async for doc in cursor:
                 old_status = doc.get("status")
                 new_status = await _update_status_with_logging(doc)

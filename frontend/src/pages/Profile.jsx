@@ -68,10 +68,10 @@ export default function Profile() {
         <CardContent>
           <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems={{ xs: "flex-start", sm: "center" }}>
             <Avatar sx={{ width: 56, height: 56, bgcolor: profileHeroAvatarBg, color: profileHeroText }}>
-              {(profile.username || "U").slice(0, 1).toUpperCase()}
+              {(profile.company_name || "U").slice(0, 1).toUpperCase()}
             </Avatar>
             <Box>
-              <Typography variant="h5">{profile.username}</Typography>
+              <Typography variant="h5">{profile.company_name}</Typography>
               <Chip
                 size="small"
                 color={roleColor}
@@ -90,9 +90,9 @@ export default function Profile() {
             <CardContent>
               <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
                 <PersonOutlineOutlinedIcon color="primary" />
-                <Typography variant="subtitle2" color="text.secondary">Username</Typography>
+                <Typography variant="subtitle2" color="text.secondary">Company Name</Typography>
               </Stack>
-              <Typography variant="h6">{profile.username}</Typography>
+              <Typography variant="h6">{profile.company_name}</Typography>
             </CardContent>
           </Card>
         </Grid>

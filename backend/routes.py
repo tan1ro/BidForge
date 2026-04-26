@@ -1,16 +1,37 @@
 import uuid
-from collections import defaultdict
+import csv
+import io
 from datetime import datetime, timedelta, timezone
 from bson import ObjectId
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect, status
 from pymongo.errors import DuplicateKeyError, OperationFailure
 
 from audit import log_audit
 from auth import UserPrincipal, UserRole, require_roles, user_from_token
-from database import rfqs_collection, bids_collection, activity_logs_collection, users_collection
+from auction_constants import is_british_style_auction
+from database import (
+    rfqs_collection,
+    bids_collection,
+    activity_logs_collection,
+    bid_revisions_collection,
+    users_collection,
+)
+from metrics_pipeline import (
+    pipeline_avg_bids,
+    pipeline_bids_per_rfq_metrics,
+    pipeline_extension_impact,
+    pipeline_extensions_per_rfq,
+    pipeline_winning_price_trend,
+)
+from rfq_aggregations import (
+    aggregate_list_rfqs,
+    aggregate_rfq_by_id,
+    bid_stats_from_aggregated_rfq,
+    strip_internal_fields,
+)
 from models import (
     RFQCreate, RFQUpdate, RFQResponse, BidCreate, BidResponse,
-    ActivityLogResponse, AuctionStatus, ExtensionTriggerType,
+    ActivityLogResponse, AuctionStatus, ExtensionTriggerType, AwardRequest,
 )
 from ws_manager import ws_manager
 
@@ -19,7 +40,15 @@ router = APIRouter(prefix="/api", tags=["RFQ & Auction"])
 
 # ─── Helpers ───
 
-def serialize_rfq(doc: dict, lowest_bid=None, total_bids=0, winner_carrier=None, winning_bid_total=None) -> dict:
+def serialize_rfq(
+    doc: dict,
+    lowest_bid=None,
+    total_bids=0,
+    winner_carrier=None,
+    winning_bid_total=None,
+    status_override: str | None = None,
+) -> dict:
+    st = status_override if status_override is not None else doc.get("status")
     return RFQResponse(
         id=str(doc["_id"]),
         name=doc["name"],
@@ -40,18 +69,24 @@ def serialize_rfq(doc: dict, lowest_bid=None, total_bids=0, winner_carrier=None,
         starting_price=doc.get("starting_price", 0),
         minimum_decrement=doc.get("minimum_decrement", 0),
         technical_specs_attachment=doc.get("technical_specs_attachment", ""),
+        technical_specs_url=doc.get("technical_specs_url", ""),
         technical_specs_file_name=doc.get("technical_specs_file_name", ""),
         technical_specs_content_type=doc.get("technical_specs_content_type", ""),
-        technical_specs_file_base64=doc.get("technical_specs_file_base64", ""),
+        technical_specs_file_size_bytes=doc.get("technical_specs_file_size_bytes", 0),
         loading_unloading_notes=doc.get("loading_unloading_notes", ""),
-        status=doc["status"],
+        supplier_visibility_mode=doc.get("supplier_visibility_mode", "full_rank"),
+        awarded_supplier=doc.get("awarded_supplier"),
+        awarded_bid_id=doc.get("awarded_bid_id"),
+        awarded_at=doc.get("awarded_at"),
+        award_note=doc.get("award_note"),
+        status=st,
         lowest_bid=lowest_bid,
         total_bids=total_bids,
         winner_carrier=winner_carrier,
         winning_bid_total=winning_bid_total,
         server_time=datetime.now(timezone.utc),
         created_at=doc["created_at"],
-    ).model_dump()
+    ).model_dump(mode="json")
 
 
 def serialize_bid(doc: dict) -> dict:
@@ -152,15 +187,18 @@ def _pagination_meta(items: list, total: int, page: int, page_size: int):
     }
 
 
+def _normalize_visibility_mode(value: str) -> str:
+    if value not in {"full_rank", "masked_competitor"}:
+        raise HTTPException(400, "Supplier visibility mode must be full_rank or masked_competitor")
+    return value
+
+
 async def check_and_extend_auction(rfq_id: str, rfq: dict, trigger_reason: str, *, trigger_type: str = "", bidder: str = ""):
-    """Check if auction should be extended and apply extension if needed.
-    
-    IMPORTANT: Always re-fetch the RFQ to get the latest current_close_time,
-    in case it was already extended during this request cycle.
-    """
-    # Re-fetch to get latest state (avoids stale data race condition)
+    """Extend close time only in-window; one concurrent extension wins (atomic update on current_close)."""
     fresh_rfq = await rfqs_collection.find_one({"_id": rfq["_id"]})
     if not fresh_rfq:
+        return False
+    if not is_british_style_auction(fresh_rfq.get("auction_type")):
         return False
 
     now = datetime.now(timezone.utc)
@@ -169,36 +207,46 @@ async def check_and_extend_auction(rfq_id: str, rfq: dict, trigger_reason: str, 
     trigger_window = fresh_rfq["trigger_window_minutes"]
     extension_duration = fresh_rfq["extension_duration_minutes"]
 
-    # Check if we're within the trigger window
     window_start = current_close - timedelta(minutes=trigger_window)
 
-    if window_start <= now <= current_close:
-        # Calculate new close time
-        new_close = current_close + timedelta(minutes=extension_duration)
+    if not (window_start <= now <= current_close):
+        return False
 
-        # Never exceed forced close time
-        if new_close > forced_close:
-            new_close = forced_close
+    new_close = current_close + timedelta(minutes=extension_duration)
+    if new_close > forced_close:
+        new_close = forced_close
+    if new_close <= current_close:
+        return False
 
-        if new_close > current_close:
-            await rfqs_collection.update_one(
-                {"_id": rfq["_id"]},
-                {"$set": {"current_close_time": new_close}}
-            )
-            await log_activity(
-                rfq_id,
-                "time_extended",
-                f"Auction extended by {extension_duration} min. New close: {new_close.strftime('%d %b %Y, %I:%M %p')} UTC. Reason: {trigger_reason}",
-                {
-                    "old_close": current_close.isoformat(),
-                    "new_close": new_close.isoformat(),
-                    "reason": trigger_reason,
-                    "trigger_type": trigger_type,
-                    "bidder": bidder,
-                },
-            )
-            return True
-    return False
+    res = await rfqs_collection.update_one(
+        {"_id": rfq["_id"], "current_close_time": current_close},
+        {"$set": {"current_close_time": new_close}},
+    )
+    if res.modified_count == 0:
+        return False
+    await log_activity(
+        rfq_id,
+        "time_extended",
+        f"Auction extended by {extension_duration} min. New close: {new_close.strftime('%d %b %Y, %I:%M %p')} UTC. Reason: {trigger_reason}",
+        {
+            "old_close": current_close.isoformat(),
+            "new_close": new_close.isoformat(),
+            "reason": trigger_reason,
+            "trigger_type": trigger_type,
+            "bidder": bidder,
+        },
+    )
+    await ws_manager.broadcast(
+        rfq_id,
+        {
+            "type": "time_extended",
+            "rfq_id": rfq_id,
+            "old_close": current_close.isoformat(),
+            "new_close": new_close.isoformat(),
+            "extension_minutes": extension_duration,
+        },
+    )
+    return True
 
 
 async def _update_status_with_logging(doc: dict):
@@ -254,16 +302,6 @@ async def _compute_winner(rfq_id: str, status: str):
     return winner_bid.get("carrier_name"), winner_bid.get("total_price")
 
 
-def _bucket_from_datetime(dt: datetime, period: str) -> str:
-    dt = _ensure_tz(dt)
-    if period == "week":
-        year, week, _ = dt.isocalendar()
-        return f"{year}-W{week:02d}"
-    if period == "month":
-        return f"{dt.year}-{dt.month:02d}"
-    return dt.strftime("%Y-%m-%d")
-
-
 def _is_editable_window_open(rfq: dict, now: datetime, total_bids: int) -> bool:
     """Allow edits/pauses before first bid and within configured editable window."""
     if total_bids > 0:
@@ -295,6 +333,7 @@ async def create_rfq(
         raise HTTPException(400, "Minimum decrement cannot be negative")
     if rfq.minimum_decrement >= rfq.starting_price:
         raise HTTPException(400, "Minimum decrement must be lower than starting price")
+    visibility_mode = _normalize_visibility_mode(rfq.supplier_visibility_mode)
 
     ref_id = f"RFQ-{uuid.uuid4().hex[:8].upper()}"
 
@@ -317,10 +356,16 @@ async def create_rfq(
         "starting_price": rfq.starting_price,
         "minimum_decrement": rfq.minimum_decrement,
         "technical_specs_attachment": rfq.technical_specs_attachment,
+        "technical_specs_url": rfq.technical_specs_url,
         "technical_specs_file_name": rfq.technical_specs_file_name,
         "technical_specs_content_type": rfq.technical_specs_content_type,
-        "technical_specs_file_base64": rfq.technical_specs_file_base64,
+        "technical_specs_file_size_bytes": rfq.technical_specs_file_size_bytes,
         "loading_unloading_notes": rfq.loading_unloading_notes,
+        "supplier_visibility_mode": visibility_mode,
+        "awarded_supplier": None,
+        "awarded_bid_id": None,
+        "awarded_at": None,
+        "award_note": None,
         "is_paused": False,
         "status": AuctionStatus.UPCOMING,
         "created_at": datetime.now(timezone.utc),
@@ -355,32 +400,33 @@ async def list_rfqs(
     status: str | None = None,
     user: UserPrincipal = Depends(require_roles([UserRole.BUYER, UserRole.SUPPLIER])),
 ):
-    """List all RFQs with current status, lowest bid, and total bids."""
-    rfqs = []
+    """List all RFQs with current status, lowest bid, and total bids (aggregated, read-only; no status writes on GET)."""
     if status == AuctionStatus.CLOSED:
         query = {"status": {"$in": [AuctionStatus.CLOSED, AuctionStatus.FORCE_CLOSED]}}
     elif status:
         query = {"status": status}
     else:
         query = {}
-    total = await rfqs_collection.count_documents(query)
-    cursor = rfqs_collection.find(query).sort("created_at", -1).skip((page - 1) * page_size).limit(page_size)
-
-    async for doc in cursor:
-        # Update status dynamically with logging
-        await _update_status_with_logging(doc)
-
-        rfq_id = str(doc["_id"])
-
-        # Get bid stats
-        total_bids = await bids_collection.count_documents({"rfq_id": rfq_id})
-        lowest_bid_doc = await bids_collection.find_one(
-            {"rfq_id": rfq_id}, sort=[("total_price", 1)]
+    total, rows = await aggregate_list_rfqs(rfqs_collection, query, page, page_size)
+    rfqs = []
+    for raw in rows:
+        total_bids, lowest_bid, l1 = bid_stats_from_aggregated_rfq(raw)
+        st = compute_status(raw)
+        winner_carrier, winning_bid_total = (None, None)
+        if st in (AuctionStatus.CLOSED, AuctionStatus.FORCE_CLOSED) and l1 is not None:
+            winner_carrier = l1.get("carrier_name")
+            winning_bid_total = l1.get("total_price")
+        base = strip_internal_fields(raw)
+        rfqs.append(
+            serialize_rfq(
+                base,
+                lowest_bid,
+                total_bids,
+                winner_carrier,
+                winning_bid_total,
+                status_override=st,
+            )
         )
-        lowest_bid = lowest_bid_doc["total_price"] if lowest_bid_doc else None
-        winner_carrier, winning_bid_total = await _compute_winner(rfq_id, doc["status"])
-        rfqs.append(serialize_rfq(doc, lowest_bid, total_bids, winner_carrier, winning_bid_total))
-
     await log_audit(
         action="rfq_list_viewed",
         username=user.username,
@@ -396,25 +442,20 @@ async def get_rfq(
     rfq_id: str,
     user: UserPrincipal = Depends(require_roles([UserRole.BUYER, UserRole.SUPPLIER])),
 ):
-    """Get detailed RFQ information."""
+    """Get detailed RFQ information (read-only: status from live clock, no writes on GET)."""
     try:
-        doc = await rfqs_collection.find_one({"_id": ObjectId(rfq_id)})
+        oid = ObjectId(rfq_id)
     except Exception:
         raise HTTPException(400, "Invalid RFQ ID")
-
+    doc = await aggregate_rfq_by_id(rfqs_collection, oid)
     if not doc:
         raise HTTPException(404, "RFQ not found")
-
-    await _update_status_with_logging(doc)
-
-    rfq_id_str = str(doc["_id"])
-    total_bids = await bids_collection.count_documents({"rfq_id": rfq_id_str})
-    lowest_bid_doc = await bids_collection.find_one(
-        {"rfq_id": rfq_id_str}, sort=[("total_price", 1)]
-    )
-    lowest_bid = lowest_bid_doc["total_price"] if lowest_bid_doc else None
-    winner_carrier, winning_bid_total = await _compute_winner(rfq_id_str, doc["status"])
-
+    total_bids, lowest_bid, l1 = bid_stats_from_aggregated_rfq(doc)
+    st = compute_status(doc)
+    winner_carrier, winning_bid_total = (None, None)
+    if st in (AuctionStatus.CLOSED, AuctionStatus.FORCE_CLOSED) and l1 is not None:
+        winner_carrier, winning_bid_total = l1.get("carrier_name"), l1.get("total_price")
+    base = strip_internal_fields(doc)
     await log_audit(
         action="rfq_viewed",
         username=user.username,
@@ -422,32 +463,43 @@ async def get_rfq(
         resource_type="rfq",
         resource_id=rfq_id,
     )
-    return serialize_rfq(doc, lowest_bid, total_bids, winner_carrier, winning_bid_total)
+    return serialize_rfq(
+        base,
+        lowest_bid,
+        total_bids,
+        winner_carrier,
+        winning_bid_total,
+        status_override=st,
+    )
 
 
 @router.get("/metrics/bids-per-rfq")
 async def metrics_bids_per_rfq(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    search: str | None = None,
     user: UserPrincipal = Depends(require_roles([UserRole.BUYER])),
 ):
-    rows = []
-    cursor = rfqs_collection.find({}).sort("created_at", -1)
-    async for doc in cursor:
-        rfq_id = str(doc["_id"])
-        bids_count = await bids_collection.count_documents({"rfq_id": rfq_id})
-        rows.append({
-            "rfq_id": rfq_id,
-            "reference_id": doc.get("reference_id"),
-            "name": doc.get("name"),
-            "status": doc.get("status"),
-            "bids_count": bids_count,
-        })
+    skip = (page - 1) * page_size
+    rows, total = await pipeline_bids_per_rfq_metrics(
+        skip, page_size, name_search=search
+    )
+    for row in rows:
+        row["status"] = str(row.get("status", "")) if row.get("status") is not None else ""
     await log_audit(
         action="metrics_bids_per_rfq_viewed",
         username=user.username,
         role=user.role.value,
         resource_type="metrics",
+        metadata={"page": page, "page_size": page_size, "search": search},
     )
-    return {"items": rows, "total": len(rows)}
+    return {
+        "items": rows,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "has_next": page * page_size < total,
+    }
 
 
 @router.get("/metrics/avg-bids")
@@ -455,26 +507,13 @@ async def metrics_avg_bids(
     period: str = Query("day", pattern="^(day|week|month)$"),
     user: UserPrincipal = Depends(require_roles([UserRole.BUYER])),
 ):
-    grouped = defaultdict(lambda: {"rfq_count": 0, "bids_count": 0})
-    cursor = rfqs_collection.find({})
-    async for doc in cursor:
-        rfq_id = str(doc["_id"])
-        bucket = _bucket_from_datetime(doc.get("created_at", datetime.now(timezone.utc)), period)
-        auction_type = doc.get("auction_type", "Reverse Auction (lowest wins)")
-        key = (auction_type, bucket)
-        grouped[key]["rfq_count"] += 1
-        grouped[key]["bids_count"] += await bids_collection.count_documents({"rfq_id": rfq_id})
-    items = []
-    for (auction_type, bucket), values in sorted(grouped.items(), key=lambda x: (x[0][1], x[0][0])):
-        rfq_count = values["rfq_count"]
-        bids_count = values["bids_count"]
-        items.append({
-            "auction_type": auction_type,
-            "period_bucket": bucket,
-            "rfq_count": rfq_count,
-            "bids_count": bids_count,
-            "avg_bids": round(bids_count / rfq_count, 2) if rfq_count else 0,
-        })
+    items = await pipeline_avg_bids(period)
+    for row in items:
+        if "avg_bids" in row and row["avg_bids"] is not None and not isinstance(row["avg_bids"], (int, float)):
+            try:
+                row["avg_bids"] = float(row["avg_bids"])
+            except (TypeError, ValueError):
+                row["avg_bids"] = 0.0
     await log_audit(
         action="metrics_avg_bids_viewed",
         username=user.username,
@@ -490,27 +529,18 @@ async def metrics_winning_price_trend(
     period: str = Query("day", pattern="^(day|week|month)$"),
     user: UserPrincipal = Depends(require_roles([UserRole.BUYER])),
 ):
-    grouped = defaultdict(list)
-    cursor = rfqs_collection.find({"status": {"$in": [AuctionStatus.CLOSED, AuctionStatus.FORCE_CLOSED]}})
-    async for doc in cursor:
-        rfq_id = str(doc["_id"])
-        winner_bid = await bids_collection.find_one(
-            {"rfq_id": rfq_id}, sort=[("total_price", 1), ("created_at", 1)]
-        )
-        if not winner_bid:
-            continue
-        bucket = _bucket_from_datetime(doc.get("current_close_time"), period)
-        grouped[bucket].append(float(winner_bid["total_price"]))
+    raw = await pipeline_winning_price_trend(period)
     items = []
-    for bucket in sorted(grouped.keys()):
-        prices = grouped[bucket]
-        items.append({
-            "period_bucket": bucket,
-            "avg_winning_price": round(sum(prices) / len(prices), 2),
-            "min_winning_price": min(prices),
-            "max_winning_price": max(prices),
-            "closed_rfq_count": len(prices),
-        })
+    for row in raw:
+        items.append(
+            {
+                "period_bucket": row.get("period_bucket"),
+                "avg_winning_price": float(row.get("avg_winning_price") or 0),
+                "min_winning_price": float(row.get("min_winning_price") or 0),
+                "max_winning_price": float(row.get("max_winning_price") or 0),
+                "closed_rfq_count": int(row.get("closed_rfq_count") or 0),
+            }
+        )
     await log_audit(
         action="metrics_winning_price_trend_viewed",
         username=user.username,
@@ -523,30 +553,43 @@ async def metrics_winning_price_trend(
 
 @router.get("/metrics/extensions-per-rfq")
 async def metrics_extensions_per_rfq(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    search: str | None = None,
     user: UserPrincipal = Depends(require_roles([UserRole.BUYER])),
 ):
-    extension_counts = defaultdict(int)
-    cursor = activity_logs_collection.find({"event_type": "time_extended"})
-    async for log in cursor:
-        extension_counts[log["rfq_id"]] += 1
-    items = []
-    rfq_cursor = rfqs_collection.find({}).sort("created_at", -1)
-    async for doc in rfq_cursor:
-        rfq_id = str(doc["_id"])
-        items.append({
-            "rfq_id": rfq_id,
-            "reference_id": doc.get("reference_id"),
-            "name": doc.get("name"),
-            "status": doc.get("status"),
-            "extension_count": extension_counts.get(rfq_id, 0),
-        })
+    skip = (page - 1) * page_size
+    items, total = await pipeline_extensions_per_rfq(skip, page_size, name_search=search)
     await log_audit(
         action="metrics_extensions_per_rfq_viewed",
         username=user.username,
         role=user.role.value,
         resource_type="metrics",
+        metadata={"page": page, "page_size": page_size, "search": search},
     )
-    return {"items": items, "total": len(items)}
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "has_next": page * page_size < total,
+    }
+
+
+@router.get("/metrics/extension-impact")
+async def metrics_extension_impact(
+    period: str = Query("day", pattern="^(day|week|month)$"),
+    user: UserPrincipal = Depends(require_roles([UserRole.BUYER])),
+):
+    items, rows = await pipeline_extension_impact(period)
+    await log_audit(
+        action="metrics_extension_impact_viewed",
+        username=user.username,
+        role=user.role.value,
+        resource_type="metrics",
+        metadata={"period": period},
+    )
+    return {"period": period, "items": items, "rfq_items": rows}
 
 
 @router.delete("/rfqs/{rfq_id}")
@@ -576,6 +619,52 @@ async def delete_rfq(
     )
 
     return {"message": f"RFQ '{rfq['name']}' and all associated data deleted successfully"}
+
+
+@router.post("/rfqs/{rfq_id}/clone", response_model=dict)
+async def clone_rfq(
+    rfq_id: str,
+    user: UserPrincipal = Depends(require_roles([UserRole.BUYER])),
+):
+    try:
+        src = await rfqs_collection.find_one({"_id": ObjectId(rfq_id)})
+    except Exception:
+        raise HTTPException(400, "Invalid RFQ ID")
+    if not src:
+        raise HTTPException(404, "RFQ not found")
+    new_ref = f"RFQ-{uuid.uuid4().hex[:8].upper()}"
+    new_doc = {k: v for k, v in src.items() if k != "_id"}
+    new_doc["reference_id"] = new_ref
+    new_doc["name"] = f"{src.get('name', 'RFQ').strip()} (Copy)"
+    new_doc["status"] = AuctionStatus.UPCOMING
+    new_doc["is_paused"] = False
+    new_doc["awarded_supplier"] = None
+    new_doc["awarded_bid_id"] = None
+    new_doc["awarded_at"] = None
+    new_doc["award_note"] = None
+    new_doc["current_close_time"] = new_doc.get("bid_close_time", src.get("bid_close_time"))
+    new_doc["created_at"] = datetime.now(timezone.utc)
+    ins = await rfqs_collection.insert_one(new_doc)
+    inserted = await rfqs_collection.find_one({"_id": ins.inserted_id})
+    if inserted:
+        await _update_status_with_logging(inserted)
+    nid = str(ins.inserted_id)
+    await log_activity(
+        nid,
+        "rfq_created",
+        f"RFQ '{new_doc.get('name')}' ({new_ref}) cloned from {src.get('reference_id')}.",
+    )
+    await log_audit(
+        action="rfq_cloned",
+        username=user.username,
+        role=user.role.value,
+        resource_type="rfq",
+        resource_id=nid,
+        metadata={"source_id": rfq_id},
+    )
+    fresh = await rfqs_collection.find_one({"_id": ins.inserted_id})
+    st = compute_status(fresh) if fresh else AuctionStatus.UPCOMING
+    return serialize_rfq(fresh, None, 0, None, None, status_override=st)
 
 
 @router.patch("/rfqs/{rfq_id}", response_model=dict)
@@ -618,6 +707,8 @@ async def update_rfq(
         raise HTTPException(400, "Minimum decrement cannot be negative")
     if float(merged.get("minimum_decrement", 0) or 0) >= float(merged.get("starting_price", 0) or 0):
         raise HTTPException(400, "Minimum decrement must be lower than starting price")
+    if "supplier_visibility_mode" in payload:
+        payload["supplier_visibility_mode"] = _normalize_visibility_mode(payload["supplier_visibility_mode"])
 
     await rfqs_collection.update_one({"_id": rfq["_id"]}, {"$set": payload})
     updated = await rfqs_collection.find_one({"_id": rfq["_id"]})
@@ -673,6 +764,76 @@ async def pause_rfq(
     lowest_bid_doc = await bids_collection.find_one({"rfq_id": rfq_id}, sort=[("total_price", 1)])
     lowest_bid = lowest_bid_doc["total_price"] if lowest_bid_doc else None
     return serialize_rfq(paused, lowest_bid, total_bids)
+
+
+@router.post("/rfqs/{rfq_id}/award", response_model=dict)
+async def award_rfq(
+    rfq_id: str,
+    payload: AwardRequest,
+    user: UserPrincipal = Depends(require_roles([UserRole.BUYER])),
+):
+    try:
+        rfq = await rfqs_collection.find_one({"_id": ObjectId(rfq_id)})
+    except Exception:
+        raise HTTPException(400, "Invalid RFQ ID")
+    if not rfq:
+        raise HTTPException(404, "RFQ not found")
+
+    await _update_status_with_logging(rfq)
+    if rfq.get("status") not in [AuctionStatus.CLOSED, AuctionStatus.FORCE_CLOSED]:
+        raise HTTPException(400, "Winner can only be awarded after auction is closed")
+    if rfq.get("awarded_bid_id"):
+        raise HTTPException(409, "Winner already awarded for this RFQ")
+
+    bid_object_id = None
+    try:
+        bid_object_id = ObjectId(payload.bid_id)
+    except Exception:
+        bid_object_id = payload.bid_id
+    bid = await bids_collection.find_one({"_id": bid_object_id, "rfq_id": rfq_id})
+    if not bid:
+        raise HTTPException(404, "Bid not found for this RFQ")
+
+    awarded_at = datetime.now(timezone.utc)
+    await rfqs_collection.update_one(
+        {"_id": rfq["_id"], "awarded_bid_id": None},
+        {
+            "$set": {
+                "awarded_supplier": bid.get("carrier_name"),
+                "awarded_bid_id": payload.bid_id,
+                "awarded_at": awarded_at,
+                "award_note": payload.award_note,
+            }
+        },
+    )
+    updated = await rfqs_collection.find_one({"_id": rfq["_id"]})
+    if not updated.get("awarded_bid_id"):
+        raise HTTPException(409, "Winner already awarded by another request")
+
+    await log_activity(
+        rfq_id,
+        "award_winner",
+        f"Buyer awarded winner {bid.get('carrier_display_name') or bid.get('carrier_name')} at ₹{float(bid.get('total_price', 0)):,.2f}",
+        {
+            "awarded_supplier": bid.get("carrier_name"),
+            "awarded_bid_id": payload.bid_id,
+            "awarded_at": awarded_at.isoformat(),
+            "award_note": payload.award_note,
+        },
+    )
+    await log_audit(
+        action="rfq_awarded",
+        username=user.username,
+        role=user.role.value,
+        resource_type="rfq",
+        resource_id=rfq_id,
+        metadata={"awarded_bid_id": payload.bid_id, "award_note": payload.award_note},
+    )
+    total_bids = await bids_collection.count_documents({"rfq_id": rfq_id})
+    lowest_bid_doc = await bids_collection.find_one({"rfq_id": rfq_id}, sort=[("total_price", 1)])
+    lowest_bid = lowest_bid_doc["total_price"] if lowest_bid_doc else None
+    winner_carrier, winning_bid_total = await _compute_winner(rfq_id, updated["status"])
+    return serialize_rfq(updated, lowest_bid, total_bids, winner_carrier, winning_bid_total)
 
 
 # ─── Bid Routes ───
@@ -823,46 +984,55 @@ async def submit_bid(
             {"carrier": carrier_display_name, "supplier_username": canonical_carrier, "total_price": total_price}
         )
 
-    # Check extension triggers
+    # Immutable bid revision for buyer timeline
+    await bid_revisions_collection.insert_one(
+        {
+            "rfq_id": rfq_id,
+            "bid_id": str(bid_id),
+            "carrier_name": canonical_carrier,
+            "total_price": total_price,
+            "is_revision": is_revision,
+            "previous_total": old_total,
+            "created_at": datetime.now(timezone.utc),
+        }
+    )
+
+    # Extension triggers (British-style auctions only; sealed/fixed opt-out on auction_type)
     trigger = rfq["extension_trigger"]
-
-    if trigger == ExtensionTriggerType.BID_RECEIVED:
-        await check_and_extend_auction(
-            rfq_id,
-            rfq,
-            f"Bid received from {carrier_display_name}",
-            trigger_type="bid_received",
-            bidder=canonical_carrier,
-        )
-
-    elif trigger == ExtensionTriggerType.RANK_CHANGE:
-        # Check if any rank changed
-        new_ranks = {}
-        async for b in bids_collection.find({"rfq_id": rfq_id}).sort("total_price", 1):
-            new_ranks[b["carrier_name"]] = b["rank"]
-        if new_ranks != old_ranks:
+    if is_british_style_auction(rfq.get("auction_type")):
+        if trigger == ExtensionTriggerType.BID_RECEIVED:
             await check_and_extend_auction(
                 rfq_id,
                 rfq,
-                f"Supplier rank changed after bid from {carrier_display_name}",
-                trigger_type="rank_change",
+                f"Bid received from {carrier_display_name}",
+                trigger_type="bid_received",
                 bidder=canonical_carrier,
             )
-
-    elif trigger == ExtensionTriggerType.L1_CHANGE:
-        # Check if L1 changed
-        new_l1 = await bids_collection.find_one(
-            {"rfq_id": rfq_id}, sort=[("total_price", 1)]
-        )
-        new_l1_carrier = new_l1["carrier_name"] if new_l1 else None
-        if new_l1_carrier != old_l1_carrier:
-            await check_and_extend_auction(
-                rfq_id,
-                rfq,
-                f"L1 changed: {old_l1_carrier} → {new_l1_carrier}",
-                trigger_type="l1_change",
-                bidder=canonical_carrier,
+        elif trigger == ExtensionTriggerType.RANK_CHANGE:
+            new_ranks = {}
+            async for b in bids_collection.find({"rfq_id": rfq_id}).sort("total_price", 1):
+                new_ranks[b["carrier_name"]] = b["rank"]
+            if new_ranks != old_ranks:
+                await check_and_extend_auction(
+                    rfq_id,
+                    rfq,
+                    f"Supplier rank changed after bid from {carrier_display_name}",
+                    trigger_type="rank_change",
+                    bidder=canonical_carrier,
+                )
+        elif trigger == ExtensionTriggerType.L1_CHANGE:
+            new_l1 = await bids_collection.find_one(
+                {"rfq_id": rfq_id}, sort=[("total_price", 1)]
             )
+            new_l1_carrier = new_l1["carrier_name"] if new_l1 else None
+            if new_l1_carrier != old_l1_carrier:
+                await check_and_extend_auction(
+                    rfq_id,
+                    rfq,
+                    f"L1 changed: {old_l1_carrier} → {new_l1_carrier}",
+                    trigger_type="l1_change",
+                    bidder=canonical_carrier,
+                )
 
     # Reload bid with updated rank
     bid_doc = await bids_collection.find_one({"_id": bid_id})
@@ -912,7 +1082,22 @@ async def get_bids(
         [("total_price", 1), ("created_at", 1)]
     ).skip((page - 1) * page_size).limit(page_size)
     async for doc in cursor:
-        bids.append(serialize_bid(doc))
+        row = serialize_bid(doc)
+        visibility_mode = rfq.get("supplier_visibility_mode", "full_rank")
+        if user.role == UserRole.SUPPLIER and visibility_mode == "masked_competitor":
+            is_self = doc.get("carrier_name") == user.username
+            if not is_self:
+                row["carrier_name"] = "Competitor"
+                row["freight_charges"] = 0
+                row["origin_charges"] = 0
+                row["destination_charges"] = 0
+                row["total_price"] = 0
+                row["transit_time"] = 0
+                row["validity"] = "Hidden"
+                row["vehicle_type"] = ""
+                row["capacity_tons"] = 0
+                row["insurance_included"] = False
+        bids.append(row)
     await log_audit(
         action="bids_viewed",
         username=user.username,
@@ -924,6 +1109,172 @@ async def get_bids(
     return _pagination_meta(bids, total, page, page_size)
 
 
+@router.get("/rfqs/{rfq_id}/bids/export")
+async def export_bids(
+    rfq_id: str,
+    format: str = Query("csv", pattern="^(csv)$"),
+    user: UserPrincipal = Depends(require_roles([UserRole.BUYER])),
+):
+    try:
+        rfq = await rfqs_collection.find_one({"_id": ObjectId(rfq_id)})
+    except Exception:
+        raise HTTPException(400, "Invalid RFQ ID")
+    if not rfq:
+        raise HTTPException(404, "RFQ not found")
+
+    rows: list[dict] = []
+    async for doc in bids_collection.find({"rfq_id": rfq_id}).sort(
+        [("total_price", 1), ("created_at", 1)]
+    ):
+        rows.append(doc)
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(
+        [
+            "rank",
+            "supplier_username",
+            "display_name",
+            "total_price",
+            "freight",
+            "origin",
+            "destination",
+            "transit_time_days",
+            "validity",
+            "created_at_utc",
+        ]
+    )
+    for doc in rows:
+        writer.writerow(
+            [
+                doc.get("rank", ""),
+                doc.get("carrier_name", ""),
+                (doc.get("carrier_display_name") or "").strip() or doc.get("carrier_name", ""),
+                doc.get("total_price", ""),
+                doc.get("freight_charges", ""),
+                doc.get("origin_charges", ""),
+                doc.get("destination_charges", ""),
+                doc.get("transit_time", ""),
+                doc.get("validity", ""),
+                _ensure_tz(doc.get("created_at")).isoformat() if doc.get("created_at") else "",
+            ]
+        )
+    await log_audit(
+        action="bids_exported",
+        username=user.username,
+        role=user.role.value,
+        resource_type="rfq",
+        resource_id=rfq_id,
+        metadata={"format": format},
+    )
+    name = f"rfq-{rfq_id}-bids.csv"
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+    )
+
+
+@router.get("/rfqs/{rfq_id}/bid-revisions")
+async def list_bid_revisions(
+    rfq_id: str,
+    user: UserPrincipal = Depends(require_roles([UserRole.BUYER, UserRole.SUPPLIER])),
+):
+    try:
+        oid = ObjectId(rfq_id)
+    except Exception:
+        raise HTTPException(400, "Invalid RFQ ID")
+    doc = await rfqs_collection.find_one({"_id": oid})
+    if not doc:
+        raise HTTPException(404, "RFQ not found")
+
+    q: dict = {"rfq_id": rfq_id}
+    if user.role == UserRole.SUPPLIER:
+        q["carrier_name"] = user.username
+    items: list[dict] = []
+    async for r in bid_revisions_collection.find(q).sort("created_at", 1):
+        items.append(
+            {
+                "id": str(r["_id"]),
+                "rfq_id": r.get("rfq_id"),
+                "bid_id": r.get("bid_id"),
+                "carrier_name": r.get("carrier_name"),
+                "total_price": r.get("total_price"),
+                "is_revision": r.get("is_revision", False),
+                "previous_total": r.get("previous_total"),
+                "created_at": r.get("created_at"),
+            }
+        )
+    return {"items": items}
+
+
+@router.get("/supplier/my-auctions")
+async def my_supplier_auctions(
+    user: UserPrincipal = Depends(require_roles([UserRole.SUPPLIER])),
+):
+    uname = user.username
+    rows = await bids_collection.aggregate(
+        [
+            {"$match": {"carrier_name": uname}},
+            {
+                "$lookup": {
+                    "from": "rfqs",
+                    "let": {"rid": "$rfq_id"},
+                    "pipeline": [
+                        {
+                            "$match": {
+                                "$expr": {
+                                    "$eq": [{"$toString": "$_id"}, "$$rid"]
+                                }
+                            }
+                        }
+                    ],
+                    "as": "r",
+                }
+            },
+            {"$unwind": {"path": "$r", "preserveNullAndEmptyArrays": True}},
+            {
+                "$lookup": {
+                    "from": "bids",
+                    "let": {"rid": "$rfq_id"},
+                    "pipeline": [
+                        {"$match": {"$expr": {"$eq": ["$rfq_id", "$$rid"]}}},
+                        {"$sort": {"total_price": 1, "created_at": 1}},
+                        {"$limit": 1},
+                    ],
+                    "as": "l1",
+                }
+            },
+        ]
+    ).to_list(length=5000)
+    out: list[dict] = []
+    for row in rows:
+        rdoc = row.get("r")
+        if not rdoc:
+            continue
+        rid = row.get("rfq_id")
+        st = compute_status(rdoc)
+        l1p = (row.get("l1") or [{}])[0].get("total_price")
+        out.append(
+            {
+                "rfq_id": rid,
+                "name": rdoc.get("name"),
+                "reference_id": rdoc.get("reference_id"),
+                "status": st.value if hasattr(st, "value") else str(st),
+                "bid_start_time": rdoc.get("bid_start_time"),
+                "current_close_time": rdoc.get("current_close_time"),
+                "my_total_price": row.get("total_price"),
+                "my_rank": row.get("rank"),
+                "l1_price": l1p,
+            }
+        )
+    out.sort(
+        key=lambda x: (str(x.get("status", "")), x.get("current_close_time") or ""),
+        reverse=True,
+    )
+    return {"items": out}
+
+
 # ─── Activity Log Routes ───
 
 @router.get("/rfqs/{rfq_id}/activity")
@@ -931,6 +1282,7 @@ async def get_activity(
     rfq_id: str,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
+    event_type: str | None = None,
     user: UserPrincipal = Depends(require_roles([UserRole.BUYER, UserRole.SUPPLIER])),
 ):
     """Get activity log for an RFQ."""
@@ -943,7 +1295,9 @@ async def get_activity(
         raise HTTPException(404, "RFQ not found")
 
     logs = []
-    query = {"rfq_id": rfq_id}
+    query: dict = {"rfq_id": rfq_id}
+    if event_type and event_type.strip():
+        query["event_type"] = event_type.strip()
     total = await activity_logs_collection.count_documents(query)
     cursor = activity_logs_collection.find(query).sort("created_at", -1).skip((page - 1) * page_size).limit(page_size)
     async for doc in cursor:
@@ -954,9 +1308,54 @@ async def get_activity(
         role=user.role.value,
         resource_type="rfq",
         resource_id=rfq_id,
-        metadata={"page": page, "page_size": page_size},
+        metadata={"page": page, "page_size": page_size, "event_type": event_type},
     )
     return _pagination_meta(logs, total, page, page_size)
+
+
+@router.get("/rfqs/{rfq_id}/activity/export")
+async def export_activity(
+    rfq_id: str,
+    format: str = Query("csv", pattern="^(csv)$"),
+    user: UserPrincipal = Depends(require_roles([UserRole.BUYER, UserRole.SUPPLIER])),
+):
+    try:
+        rfq = await rfqs_collection.find_one({"_id": ObjectId(rfq_id)})
+    except Exception:
+        raise HTTPException(400, "Invalid RFQ ID")
+    if not rfq:
+        raise HTTPException(404, "RFQ not found")
+
+    logs = []
+    async for doc in activity_logs_collection.find({"rfq_id": rfq_id}).sort("created_at", 1):
+        logs.append(doc)
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["timestamp_utc", "event_type", "description", "metadata"])
+    for log in logs:
+        writer.writerow(
+            [
+                _ensure_tz(log.get("created_at")).isoformat() if log.get("created_at") else "",
+                log.get("event_type", ""),
+                log.get("description", ""),
+                str(log.get("metadata", {})),
+            ]
+        )
+    await log_audit(
+        action="activity_exported",
+        username=user.username,
+        role=user.role.value,
+        resource_type="rfq",
+        resource_id=rfq_id,
+        metadata={"format": format},
+    )
+    filename = f"rfq-{rfq_id}-activity.csv"
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.websocket("/ws/rfqs/{rfq_id}")

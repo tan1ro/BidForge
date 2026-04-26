@@ -38,10 +38,12 @@ class RFQCreate(BaseModel):
     starting_price: float = Field(ge=0, default=0)
     minimum_decrement: float = Field(ge=0, default=0)
     technical_specs_attachment: Annotated[str, StringConstraints(max_length=500, strip_whitespace=True)] = ""
+    technical_specs_url: Annotated[str, StringConstraints(max_length=1000, strip_whitespace=True)] = ""
     technical_specs_file_name: Annotated[str, StringConstraints(max_length=255, strip_whitespace=True)] = ""
     technical_specs_content_type: Annotated[str, StringConstraints(max_length=120, strip_whitespace=True)] = ""
-    technical_specs_file_base64: Annotated[str, StringConstraints(max_length=8_000_000, strip_whitespace=True)] = ""
+    technical_specs_file_size_bytes: int = Field(ge=0, default=0)
     loading_unloading_notes: Annotated[str, StringConstraints(max_length=1000, strip_whitespace=True)] = ""
+    supplier_visibility_mode: Annotated[str, StringConstraints(min_length=4, max_length=40, strip_whitespace=True)] = "full_rank"
 
 
 class RFQUpdate(BaseModel):
@@ -61,10 +63,12 @@ class RFQUpdate(BaseModel):
     starting_price: float | None = Field(default=None, ge=0)
     minimum_decrement: float | None = Field(default=None, ge=0)
     technical_specs_attachment: Annotated[str, StringConstraints(max_length=500, strip_whitespace=True)] | None = None
+    technical_specs_url: Annotated[str, StringConstraints(max_length=1000, strip_whitespace=True)] | None = None
     technical_specs_file_name: Annotated[str, StringConstraints(max_length=255, strip_whitespace=True)] | None = None
     technical_specs_content_type: Annotated[str, StringConstraints(max_length=120, strip_whitespace=True)] | None = None
-    technical_specs_file_base64: Annotated[str, StringConstraints(max_length=8_000_000, strip_whitespace=True)] | None = None
+    technical_specs_file_size_bytes: int | None = Field(default=None, ge=0)
     loading_unloading_notes: Annotated[str, StringConstraints(max_length=1000, strip_whitespace=True)] | None = None
+    supplier_visibility_mode: Annotated[str, StringConstraints(min_length=4, max_length=40, strip_whitespace=True)] | None = None
 
 
 class RFQResponse(BaseModel):
@@ -87,10 +91,16 @@ class RFQResponse(BaseModel):
     starting_price: float = 0
     minimum_decrement: float = 0
     technical_specs_attachment: str = ""
+    technical_specs_url: str = ""
     technical_specs_file_name: str = ""
     technical_specs_content_type: str = ""
-    technical_specs_file_base64: str = ""
+    technical_specs_file_size_bytes: int = 0
     loading_unloading_notes: str = ""
+    supplier_visibility_mode: str = "full_rank"
+    awarded_supplier: Optional[str] = None
+    awarded_bid_id: Optional[str] = None
+    awarded_at: Optional[datetime] = None
+    award_note: Optional[str] = None
     status: AuctionStatus
     lowest_bid: Optional[float] = None
     total_bids: int = 0
@@ -142,10 +152,15 @@ class ActivityLogResponse(BaseModel):
     created_at: datetime
 
 
+class AwardRequest(BaseModel):
+    bid_id: str
+    award_note: Annotated[str, StringConstraints(max_length=500, strip_whitespace=True)] = ""
+
+
 # ─── Auth Models ───
 
 class UserSignup(BaseModel):
-    username: Annotated[str, StringConstraints(min_length=3, max_length=40, strip_whitespace=True)]
+    company_name: Annotated[str, StringConstraints(min_length=3, max_length=40, strip_whitespace=True)]
     email: Annotated[str, StringConstraints(min_length=5, max_length=120, strip_whitespace=True)]
     password: Annotated[str, StringConstraints(min_length=6, max_length=128)]
     role: str = "supplier"

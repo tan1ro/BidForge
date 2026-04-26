@@ -51,6 +51,14 @@ JWT_ALGORITHM=HS256
 JWT_EXPIRES_MINUTES=120
 RATE_LIMIT_PER_MINUTE=120
 CORS_ORIGINS=http://localhost:5173,http://localhost:5174,http://localhost:3000
+TECHNICAL_SPECS_BASE_URL=
+```
+
+Create `frontend/.env` (or copy from `frontend/.env.example`):
+
+```env
+VITE_API_BASE_URL=http://localhost:8000/api
+VITE_WS_BASE_URL=ws://localhost:8000
 ```
 
 ## Local Development
@@ -131,6 +139,7 @@ npm run build
 - `GET /api/metrics/avg-bids?period=day|week|month`
 - `GET /api/metrics/winning-price-trend?period=day|week|month`
 - `GET /api/metrics/extensions-per-rfq`
+- `GET /api/metrics/extension-impact?period=day|week|month`
 
 ### WebSocket
 
@@ -152,6 +161,8 @@ These endpoints support pagination:
 - `GET /api/rfqs`
 - `GET /api/rfqs/{rfq_id}/bids`
 - `GET /api/rfqs/{rfq_id}/activity`
+- `GET /api/rfqs/{rfq_id}/activity/export?format=csv`
+- `POST /api/rfqs/{rfq_id}/award` (buyer, closed/force-closed only)
 
 Query params:
 

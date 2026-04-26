@@ -55,10 +55,16 @@ Purpose: RFQ master record plus auction configuration and runtime state.
 - `starting_price` (number, required)
 - `minimum_decrement` (number, required)
 - `technical_specs_attachment` (string)
+- `technical_specs_url` (string)
 - `technical_specs_file_name` (string)
 - `technical_specs_content_type` (string)
-- `technical_specs_file_base64` (string, optional large payload)
+- `technical_specs_file_size_bytes` (int)
 - `loading_unloading_notes` (string)
+- `supplier_visibility_mode` (enum: `full_rank` | `masked_competitor`)
+- `awarded_supplier` (string | null)
+- `awarded_bid_id` (string | null)
+- `awarded_at` (datetime | null)
+- `award_note` (string | null)
 - `is_paused` (bool)
 - `status` (enum: `upcoming` | `active` | `paused` | `closed` | `force_closed`)
 - `created_at` (datetime, required)
@@ -138,6 +144,7 @@ Purpose: transparent auction timeline for business events and reasoning.
 - `auction_started`
 - `auction_closed`
 - `auction_paused`
+- `award_winner`
 
 ### Indexes
 

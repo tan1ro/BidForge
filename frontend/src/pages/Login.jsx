@@ -17,7 +17,7 @@ import { parseApiError } from "../utils/errorHandling";
 
 export default function Login({ onLogin }) {
   const navigate = useNavigate();
-  const [form, setForm] = useState({ username: '', password: '' });
+  const [form, setForm] = useState({ company_name: '', password: '' });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -27,11 +27,11 @@ export default function Login({ onLogin }) {
     setError('');
     try {
       const res = await login(form);
-      const { access_token: token, role, username } = res.data;
+      const { access_token: token, role, company_name } = res.data;
       localStorage.setItem('auth_token', token);
       localStorage.setItem('auth_role', role);
-      localStorage.setItem('auth_username', username);
-      onLogin({ role, username });
+      localStorage.setItem('auth_company_name', company_name);
+      onLogin({ role, companyName: company_name });
       navigate('/auctions', { replace: true });
     } catch (err) {
       setError(parseApiError(err, "Login failed"));
@@ -140,9 +140,9 @@ export default function Login({ onLogin }) {
                 <Box component="form" onSubmit={handleSubmit}>
                   <Stack spacing={2}>
                     <TextField
-                      label="Username or Email"
-                      value={form.username}
-                      onChange={(e) => setForm((prev) => ({ ...prev, username: e.target.value }))}
+                      label="Company Name or Email"
+                      value={form.company_name}
+                      onChange={(e) => setForm((prev) => ({ ...prev, company_name: e.target.value }))}
                       fullWidth
                       required
                     />

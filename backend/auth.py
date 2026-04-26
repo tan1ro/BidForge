@@ -26,7 +26,7 @@ class UserPrincipal(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    username: str
+    company_name: str
     password: str
 
 
@@ -34,11 +34,11 @@ class LoginResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     role: UserRole
-    username: str
+    company_name: str
 
 
 class UserProfileResponse(BaseModel):
-    username: str
+    company_name: str
     email: str
     role: UserRole
     created_at: datetime
@@ -59,8 +59,8 @@ def _b64decode(value: str) -> bytes:
     return base64.urlsafe_b64decode(value.encode("ascii"))
 
 
-async def authenticate_user(username: str, password: str) -> UserPrincipal | None:
-    user = await users_collection.find_one({"$or": [{"username": username}, {"email": username}]})
+async def authenticate_user(company_name_or_email: str, password: str) -> UserPrincipal | None:
+    user = await users_collection.find_one({"$or": [{"username": company_name_or_email}, {"email": company_name_or_email}]})
     if not user:
         return None
     if not verify_password(password, user["password_hash"]):
@@ -68,10 +68,10 @@ async def authenticate_user(username: str, password: str) -> UserPrincipal | Non
     return UserPrincipal(username=user["username"], role=UserRole(user["role"]))
 
 
-async def get_login_error(username: str, password: str) -> str | None:
-    user = await users_collection.find_one({"$or": [{"username": username}, {"email": username}]})
+async def get_login_error(company_name_or_email: str, password: str) -> str | None:
+    user = await users_collection.find_one({"$or": [{"username": company_name_or_email}, {"email": company_name_or_email}]})
     if not user:
-        return "User or email does not exist"
+        return "Company name or email does not exist"
     if not verify_password(password, user["password_hash"]):
         return "Incorrect password"
     return None
@@ -111,20 +111,20 @@ def verify_password(password: str, encoded_password: str) -> bool:
         return False
 
 
-async def create_user(username: str, email: str, password: str, role: UserRole) -> UserPrincipal:
-    existing = await users_collection.find_one({"$or": [{"username": username}, {"email": email}]})
+async def create_user(company_name: str, email: str, password: str, role: UserRole) -> UserPrincipal:
+    existing = await users_collection.find_one({"$or": [{"username": company_name}, {"email": email}]})
     if existing:
-        raise HTTPException(status_code=409, detail="Username or email already exists")
+        raise HTTPException(status_code=409, detail="Company name or email already exists")
     await users_collection.insert_one(
         {
-            "username": username,
+            "username": company_name,
             "email": email,
             "password_hash": hash_password(password),
             "role": role.value,
             "created_at": datetime.now(timezone.utc),
         }
     )
-    return UserPrincipal(username=username, role=role)
+    return UserPrincipal(username=company_name, role=role)
 
 
 def create_access_token(user: UserPrincipal) -> str:

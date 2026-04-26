@@ -31,7 +31,9 @@ describe("Login and Signup", () => {
     );
 
     expect(screen.getByRole("button", { name: "Sign in" })).toBeInTheDocument();
-    expect(screen.getByRole("textbox", { name: /username/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("textbox", { name: /company name or email/i })
+    ).toBeInTheDocument();
   });
 
   it("renders signup form fields", async () => {

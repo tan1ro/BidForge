@@ -42,6 +42,11 @@ vi.mock("../api", () => ({
   })),
   getActivity: vi.fn(async () => ({ data: [] })),
   submitBid: vi.fn(),
+  updateRFQ: vi.fn(),
+  pauseRFQ: vi.fn(),
+  awardRFQ: vi.fn(),
+  exportActivity: vi.fn(),
+  getWebSocketBase: vi.fn(() => "ws://localhost:8000"),
 }));
 
 describe("AuctionDetail", () => {
@@ -139,6 +144,40 @@ describe("AuctionDetail", () => {
     await waitFor(() => {
       expect(screen.getByText(/Winner: Carrier A/)).toBeInTheDocument();
       expect(screen.getByText("Winner")).toBeInTheDocument();
+    });
+  });
+
+  it("shows award winner action for buyer on closed auction", async () => {
+    const { getRFQ } = await import("../api");
+    getRFQ.mockResolvedValueOnce({
+      data: {
+        id: "rfq-1",
+        name: "Closed Auction",
+        reference_id: "RFQ-CLOSED1",
+        status: "closed",
+        bid_start_time: new Date(Date.now() - 10000).toISOString(),
+        bid_close_time: new Date(Date.now() - 5000).toISOString(),
+        current_close_time: new Date(Date.now() - 5000).toISOString(),
+        forced_close_time: new Date(Date.now() + 600000).toISOString(),
+        pickup_date: new Date(Date.now() + 86400000).toISOString(),
+        trigger_window_minutes: 10,
+        extension_duration_minutes: 5,
+        extension_trigger: "bid_received",
+        total_bids: 1,
+        lowest_bid: 1200,
+      },
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/auction/rfq-1"]}>
+        <Routes>
+          <Route path="/auction/:id" element={<AuctionDetail role="buyer" />} />
+        </Routes>
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Award Winner")).toBeInTheDocument();
     });
   });
 });

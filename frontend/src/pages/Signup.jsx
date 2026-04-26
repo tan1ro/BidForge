@@ -21,7 +21,7 @@ export default function Signup({ onSignup }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [form, setForm] = useState({
-    username: "",
+    company_name: "",
     email: "",
     password: "",
     confirmPassword: "",
@@ -38,11 +38,11 @@ export default function Signup({ onSignup }) {
     setLoading(true);
     try {
       const res = await signup(form);
-      const { access_token: token, role, username } = res.data;
+      const { access_token: token, role, company_name } = res.data;
       localStorage.setItem("auth_token", token);
       localStorage.setItem("auth_role", role);
-      localStorage.setItem("auth_username", username);
-      onSignup({ role, username });
+      localStorage.setItem("auth_company_name", company_name);
+      onSignup({ role, companyName: company_name });
       navigate("/auctions", { replace: true });
     } catch (err) {
       setError(parseApiError(err, "Signup failed"));
@@ -140,9 +140,9 @@ export default function Signup({ onSignup }) {
                 <Box component="form" onSubmit={handleSubmit}>
                   <Stack spacing={2}>
                     <TextField
-                      label="Username"
-                      value={form.username}
-                      onChange={(e) => setForm((prev) => ({ ...prev, username: e.target.value }))}
+                      label="Company Name"
+                      value={form.company_name}
+                      onChange={(e) => setForm((prev) => ({ ...prev, company_name: e.target.value }))}
                       required
                       fullWidth
                     />

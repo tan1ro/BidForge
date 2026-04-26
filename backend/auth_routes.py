@@ -21,9 +21,9 @@ router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 
 @router.post("/login", response_model=LoginResponse)
 async def login(payload: LoginRequest):
-    user = await authenticate_user(payload.username, payload.password)
+    user = await authenticate_user(payload.company_name, payload.password)
     if not user:
-        error_message = await get_login_error(payload.username, payload.password)
+        error_message = await get_login_error(payload.company_name, payload.password)
         raise HTTPException(status_code=401, detail=error_message or "Invalid credentials")
     token = create_access_token(user)
     await log_audit(
@@ -31,12 +31,12 @@ async def login(payload: LoginRequest):
         username=user.username,
         role=user.role.value,
         resource_type="auth",
-        metadata={"username": payload.username},
+        metadata={"company_name": payload.company_name},
     )
     return LoginResponse(
         access_token=token,
         role=user.role,
-        username=user.username,
+        company_name=user.username,
     )
 
 
@@ -46,7 +46,7 @@ async def get_profile(user: UserPrincipal = Depends(get_current_user)):
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
     return UserProfileResponse(
-        username=db_user["username"],
+        company_name=db_user["username"],
         email=db_user["email"],
         role=UserRole(db_user["role"]),
         created_at=db_user["created_at"],
@@ -57,7 +57,7 @@ async def get_profile(user: UserPrincipal = Depends(get_current_user)):
 async def signup(payload: UserSignup):
     role = UserRole(payload.role)
     user = await create_user(
-        username=payload.username,
+        company_name=payload.company_name,
         email=payload.email,
         password=payload.password,
         role=role,
@@ -73,5 +73,5 @@ async def signup(payload: UserSignup):
     return LoginResponse(
         access_token=token,
         role=user.role,
-        username=user.username,
+        company_name=user.username,
     )

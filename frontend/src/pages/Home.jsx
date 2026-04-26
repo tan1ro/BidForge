@@ -75,12 +75,15 @@ export default function Home() {
                 Launch RFQs, receive supplier bids in real time, and close every auction with transparent rules and
                 decision-ready data.
               </Typography>
-              <Stack direction={{ xs: "column", sm: "row" }} spacing={1.2} sx={{ mt: 3 }}>
+              <Stack direction={{ xs: "column", sm: "row" }} spacing={1.2} sx={{ mt: 3 }} flexWrap="wrap" useFlexGap>
                 <Button component={RouterLink} to="/login" size="large" variant="contained">
                   Login
                 </Button>
                 <Button component={RouterLink} to="/signup" size="large" variant="outlined">
                   Signup
+                </Button>
+                <Button component={RouterLink} to="/about" size="large" variant="text">
+                  About the project
                 </Button>
               </Stack>
             </Box>
@@ -119,33 +122,6 @@ export default function Home() {
             </Box>
           </Stack>
 
-          <Box
-            sx={{
-              p: { xs: 2.5, md: 3 },
-              borderRadius: 2,
-              border: "1px solid",
-              borderColor: "divider",
-              bgcolor: "background.paper",
-            }}
-          >
-            <Typography variant="h6">About Nandeesh Kantli</Typography>
-            <Typography color="text.secondary" sx={{ mt: 1 }}>
-              Nandeesh Kantli is a student at RV University and this app was developed to demonstrate a
-              production-style British Auction RFQ workflow with clean UX and practical business features.
-            </Typography>
-            <Typography variant="subtitle2" sx={{ mt: 2 }}>
-              Core Skills
-            </Typography>
-            <Typography color="text.secondary" sx={{ mt: 0.8 }}>
-              - Full Stack Development (React, FastAPI, REST APIs)
-            </Typography>
-            <Typography color="text.secondary">
-              - AI/ML Fundamentals and Applied Problem Solving
-            </Typography>
-            <Typography color="text.secondary">
-              - Real-time systems, workflows, and product-focused UI/UX
-            </Typography>
-          </Box>
         </Stack>
       </Container>
     </Box>

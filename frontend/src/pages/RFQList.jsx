@@ -15,6 +15,7 @@ import {
   InputAdornment,
   MenuItem,
   Paper,
+  Snackbar,
   Stack,
   Table,
   TableBody,
@@ -27,9 +28,10 @@ import {
 } from "@mui/material";
 import SearchIcon from "@mui/icons-material/Search";
 import AddCircleOutlineIcon from "@mui/icons-material/AddCircleOutline";
+import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import VisibilityOutlinedIcon from "@mui/icons-material/VisibilityOutlined";
-import { listRFQs, deleteRFQ } from '../api';
+import { listRFQs, deleteRFQ, cloneRFQ } from '../api';
 import { parseApiError } from "../utils/errorHandling";
 
 const STATUS_LABELS = {
@@ -52,6 +54,16 @@ function formatCurrency(val) {
   return `₹${val.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`;
 }
 
+function countdownTo(target) {
+  const end = new Date(target).getTime() - Date.now();
+  if (end <= 0) return "—";
+  const s = Math.floor(end / 1000);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const r = s % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(r).padStart(2, "0")}`;
+}
+
 function statusColor(status) {
   if (status === "active") return "success";
   if (status === "paused") return "warning";
@@ -72,9 +84,11 @@ export default function RFQList({ role }) {
   const [filter, setFilter] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState('created_desc');
-  const [toast, setToast] = useState(null);
+  const [snack, setSnack] = useState({ open: false, message: "", severity: "success" });
   const [confirmDelete, setConfirmDelete] = useState(null);
+  const [tick, setTick] = useState(0);
   const intervalRef = useRef(null);
+  const prevCloseByIdRef = useRef({});
 
   const loadRFQs = useCallback(async () => {
     try {
@@ -82,7 +96,34 @@ export default function RFQList({ role }) {
       const statusFilter = filter === 'all' ? undefined : (filter === 'closed' ? 'closed' : filter);
       const res = await listRFQs({ page, page_size: pageSize, status: statusFilter });
       const payload = Array.isArray(res.data) ? { items: res.data, total: res.data.length } : res.data;
-      setRfqs(payload.items || []);
+      const items = payload.items || [];
+      const prevMap = prevCloseByIdRef.current;
+      for (const r of items) {
+        const id = r.id;
+        if (!id) continue;
+        const oldT = prevMap[id];
+        const newT = r.current_close_time;
+        if (
+          oldT &&
+          newT &&
+          new Date(newT) > new Date(oldT) &&
+          (r.status === "active" || r.status === "upcoming" || r.status === "paused")
+        ) {
+          setSnack({
+            open: true,
+            severity: "info",
+            message: `Auction "${r.name}" was extended. New close: ${formatDate(newT)}`,
+          });
+          break;
+        }
+      }
+      const next = { ...prevMap };
+      for (const r of items) {
+        if (r.id) next[r.id] = r.current_close_time;
+      }
+      prevCloseByIdRef.current = next;
+
+      setRfqs(items);
       setTotalRFQs(payload.total || 0);
     } catch (err) {
       setLoadError(parseApiError(err, "Failed to load auctions"));
@@ -98,11 +139,24 @@ export default function RFQList({ role }) {
     intervalRef.current = setInterval(() => {
       void loadRFQs();
     }, 10000);
+    const t = setInterval(() => setTick((x) => x + 1), 1000);
     return () => {
       clearTimeout(bootstrap);
       clearInterval(intervalRef.current);
+      clearInterval(t);
     };
   }, [loadRFQs]);
+
+  async function handleClone(rfq) {
+    if (role !== "buyer") return;
+    try {
+      const { data } = await cloneRFQ(rfq.id);
+      showToast(`Cloned. New reference: ${data?.reference_id || ""}`);
+      loadRFQs();
+    } catch (err) {
+      showToast(parseApiError(err, "Failed to clone RFQ"), "error");
+    }
+  }
 
   async function handleDelete(rfq) {
     try {
@@ -115,10 +169,12 @@ export default function RFQList({ role }) {
     }
   }
 
-  function showToast(message, type = 'success') {
-    setToast({ message, type });
-    setTimeout(() => setToast(null), 3000);
+  function showToast(message, type = "success") {
+    const severity = type === "error" ? "error" : type === "info" ? "info" : "success";
+    setSnack({ open: true, message, severity });
   }
+
+  void tick;
 
   let filtered = filter === 'all'
     ? rfqs
@@ -242,7 +298,8 @@ export default function RFQList({ role }) {
                 <TableCell>Status</TableCell>
                 <TableCell>Lowest Bid</TableCell>
                 <TableCell>Bids</TableCell>
-                <TableCell>Current Bid Close Time</TableCell>
+                <TableCell>Bid opens</TableCell>
+                <TableCell>Current close / countdown</TableCell>
                 <TableCell>Forced Close</TableCell>
                 <TableCell align="right">Actions</TableCell>
               </TableRow>
@@ -258,15 +315,28 @@ export default function RFQList({ role }) {
                   </TableCell>
                   <TableCell>{formatCurrency(rfq.lowest_bid)}</TableCell>
                   <TableCell>{rfq.total_bids}</TableCell>
-                  <TableCell>{formatDate(rfq.current_close_time)}</TableCell>
+                  <TableCell>{formatDate(rfq.bid_start_time)}</TableCell>
+                  <TableCell>
+                    <Typography variant="body2">{formatDate(rfq.current_close_time)}</Typography>
+                    {rfq.status === "active" && (
+                      <Typography variant="caption" color="primary">
+                        {countdownTo(rfq.current_close_time)} left
+                      </Typography>
+                    )}
+                  </TableCell>
                   <TableCell>{formatDate(rfq.forced_close_time)}</TableCell>
                   <TableCell align="right">
                     <Stack direction="row" justifyContent="flex-end" spacing={1}>
                       <Button component={Link} to={`/auction/${rfq.id}`} size="small" startIcon={<VisibilityOutlinedIcon />}>View</Button>
                       {role === "buyer" && (
-                        <Button size="small" color="error" startIcon={<DeleteOutlineIcon />} onClick={() => setConfirmDelete(rfq)}>
-                          Delete
-                        </Button>
+                        <>
+                          <Button size="small" startIcon={<ContentCopyIcon />} onClick={() => void handleClone(rfq)}>
+                            Clone
+                          </Button>
+                          <Button size="small" color="error" startIcon={<DeleteOutlineIcon />} onClick={() => setConfirmDelete(rfq)}>
+                            Delete
+                          </Button>
+                        </>
                       )}
                     </Stack>
                   </TableCell>
@@ -296,15 +366,16 @@ export default function RFQList({ role }) {
         </DialogActions>
       </Dialog>
 
-      {toast && (
-        <Alert
-          severity={toast.type === "error" ? "error" : "success"}
-          variant="filled"
-          sx={{ position: "fixed", right: 24, bottom: 24, zIndex: 1400, maxWidth: 360 }}
-        >
-          {toast.message}
+      <Snackbar
+        open={snack.open}
+        autoHideDuration={5000}
+        onClose={() => setSnack((s) => ({ ...s, open: false }))}
+        anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+      >
+        <Alert severity={snack.severity} variant="filled" onClose={() => setSnack((s) => ({ ...s, open: false }))}>
+          {snack.message}
         </Alert>
-      )}
+      </Snackbar>
     </Stack>
   );
 }

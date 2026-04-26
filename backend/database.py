@@ -8,6 +8,8 @@ db = client[settings.database_name]
 rfqs_collection = db["rfqs"]
 bids_collection = db["bids"]
 activity_logs_collection = db["activity_logs"]
+bid_revisions_collection = db["bid_revisions"]
+distributed_locks_collection = db["distributed_locks"]
 audit_logs_collection = db["audit_logs"]
 users_collection = db["users"]
 
@@ -18,10 +20,16 @@ async def init_db():
     await bids_collection.create_index([("rfq_id", 1), ("total_price", 1)])
     await bids_collection.create_index([("rfq_id", 1), ("carrier_name", 1)], unique=True)
     await activity_logs_collection.create_index([("rfq_id", 1), ("created_at", -1)])
+    await activity_logs_collection.create_index([("rfq_id", 1), ("event_type", 1), ("created_at", -1)])
+    await activity_logs_collection.create_index("event_type")
+    await bid_revisions_collection.create_index([("rfq_id", 1), ("created_at", -1)])
+    await bid_revisions_collection.create_index([("rfq_id", 1), ("carrier_name", 1), ("created_at", -1)])
+    await distributed_locks_collection.create_index("expires_at")
     await rfqs_collection.create_index([("created_at", -1)])
     await rfqs_collection.create_index([("status", 1), ("created_at", -1)])
     await rfqs_collection.create_index([("status", 1), ("current_close_time", 1)])
     await rfqs_collection.create_index([("forced_close_time", 1)])
+    await rfqs_collection.create_index("name")
     await audit_logs_collection.create_index([("created_at", -1)])
     await audit_logs_collection.create_index([("action", 1), ("created_at", -1)])
     await users_collection.create_index("username", unique=True)

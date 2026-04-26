@@ -26,6 +26,7 @@ import MenuIcon from "@mui/icons-material/Menu";
 import DarkModeOutlinedIcon from "@mui/icons-material/DarkModeOutlined";
 import LightModeOutlinedIcon from "@mui/icons-material/LightModeOutlined";
 import GavelOutlinedIcon from "@mui/icons-material/GavelOutlined";
+import LocalShippingOutlinedIcon from "@mui/icons-material/LocalShippingOutlined";
 import AddCircleOutlineIcon from "@mui/icons-material/AddCircleOutline";
 import InsightsOutlinedIcon from "@mui/icons-material/InsightsOutlined";
 import LogoutIcon from "@mui/icons-material/Logout";
@@ -39,8 +40,10 @@ import Login from './pages/Login';
 import Signup from './pages/Signup';
 import Profile from './pages/Profile';
 import Home from "./pages/Home";
+import About from "./pages/About";
 import NotFound from "./pages/NotFound";
 import ServerError from "./pages/ServerError";
+import SupplierMyAuctions from "./pages/SupplierMyAuctions";
 
 function AppShell({ session, isAuthenticated, onLogout, themeMode, onToggleTheme, children }) {
   const [open, setOpen] = useState(false);
@@ -55,7 +58,7 @@ function AppShell({ session, isAuthenticated, onLogout, themeMode, onToggleTheme
           { label: "Create RFQ", path: "/create", icon: <AddCircleOutlineIcon fontSize="small" /> },
           { label: "Metrics", path: "/metrics", icon: <InsightsOutlinedIcon fontSize="small" /> },
         ]
-      : []),
+      : [{ label: "My bids", path: "/my-bids", icon: <LocalShippingOutlinedIcon fontSize="small" /> }]),
   ];
 
   if (!isAuthenticated) {
@@ -203,7 +206,7 @@ function AppShell({ session, isAuthenticated, onLogout, themeMode, onToggleTheme
               </Button>
             ))}
           </Box>
-          <Avatar sx={{ width: 34, height: 34, mr: 1.2 }}>{(session.username || "U").slice(0, 1).toUpperCase()}</Avatar>
+          <Avatar sx={{ width: 34, height: 34, mr: 1.2 }}>{(session.companyName || "U").slice(0, 1).toUpperCase()}</Avatar>
           <Button color="inherit" startIcon={<LogoutIcon />} onClick={() => setConfirmLogout(true)}>
             Logout
           </Button>
@@ -260,7 +263,7 @@ function App({ themeMode, onToggleTheme }) {
   const [session, setSession] = useState(() => ({
     token: localStorage.getItem('auth_token'),
     role: localStorage.getItem('auth_role'),
-    username: localStorage.getItem('auth_username'),
+    companyName: localStorage.getItem('auth_company_name'),
   }));
 
   const isAuthenticated = useMemo(() => Boolean(session.token), [session.token]);
@@ -268,8 +271,8 @@ function App({ themeMode, onToggleTheme }) {
   function handleLogout() {
     localStorage.removeItem('auth_token');
     localStorage.removeItem('auth_role');
-    localStorage.removeItem('auth_username');
-    setSession({ token: null, role: null, username: null });
+    localStorage.removeItem('auth_company_name');
+    setSession({ token: null, role: null, companyName: null });
   }
 
   return (
@@ -288,7 +291,7 @@ function App({ themeMode, onToggleTheme }) {
                 isAuthenticated ? (
                   <Navigate to="/auctions" replace />
                 ) : (
-                  <Login onLogin={({ role, username }) => setSession({ token: localStorage.getItem('auth_token'), role, username })} />
+                  <Login onLogin={({ role, companyName }) => setSession({ token: localStorage.getItem('auth_token'), role, companyName })} />
                 )
               }
             />
@@ -298,11 +301,12 @@ function App({ themeMode, onToggleTheme }) {
                 isAuthenticated ? (
                   <Navigate to="/auctions" replace />
                 ) : (
-                  <Signup onSignup={({ role, username }) => setSession({ token: localStorage.getItem('auth_token'), role, username })} />
+                  <Signup onSignup={({ role, companyName }) => setSession({ token: localStorage.getItem('auth_token'), role, companyName })} />
                 )
               }
             />
             <Route path="/" element={<Home />} />
+            <Route path="/about" element={<About />} />
             <Route path="/auctions" element={isAuthenticated ? <RFQList role={session.role} /> : <Navigate to="/login" replace />} />
             <Route path="/profile" element={isAuthenticated ? <Profile /> : <Navigate to="/login" replace />} />
             <Route
@@ -312,6 +316,12 @@ function App({ themeMode, onToggleTheme }) {
             <Route
               path="/metrics"
               element={isAuthenticated && session.role === "buyer" ? <BuyerMetrics /> : <Navigate to="/auctions" replace />}
+            />
+            <Route
+              path="/my-bids"
+              element={
+                isAuthenticated && session.role === "supplier" ? <SupplierMyAuctions /> : <Navigate to="/auctions" replace />
+              }
             />
             <Route path="/auction/:id" element={isAuthenticated ? <AuctionDetail role={session.role} /> : <Navigate to="/login" replace />} />
             <Route path="/500" element={<ServerError />} />

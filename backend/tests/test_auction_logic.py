@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
@@ -15,8 +16,10 @@ from models import AuctionStatus
 
 
 class FakeResult:
-    def __init__(self, inserted_id=None):
+    def __init__(self, inserted_id=None, matched_count=0, modified_count=0):
         self.inserted_id = inserted_id
+        self.matched_count = matched_count
+        self.modified_count = modified_count
 
 
 class FakeCollection:
@@ -32,10 +35,16 @@ class FakeCollection:
 
     async def update_one(self, query, update):
         _id = query.get("_id")
-        if _id in self.docs:
-            for key, value in update.get("$set", {}).items():
-                self.docs[_id][key] = value
-        return FakeResult()
+        if _id not in self.docs:
+            return FakeResult(matched_count=0, modified_count=0)
+        doc = self.docs[_id]
+        extra = {k: v for k, v in query.items() if k not in ("_id",)}
+        for k, v in extra.items():
+            if doc.get(k) != v:
+                return FakeResult(matched_count=0, modified_count=0)
+        for key, value in update.get("$set", {}).items():
+            doc[key] = value
+        return FakeResult(matched_count=1, modified_count=1)
 
     async def insert_one(self, doc):
         key = doc.get("_id")
@@ -96,6 +105,10 @@ def make_active_rfq(now):
         "trigger_window_minutes": 10,
         "extension_duration_minutes": 5,
         "extension_trigger": "bid_received",
+        "auction_type": "Reverse Auction (lowest wins)",
+        "starting_price": 0,
+        "minimum_decrement": 0,
+        "is_paused": False,
         "status": AuctionStatus.ACTIVE,
         "created_at": now,
     }
@@ -130,8 +143,12 @@ async def test_check_and_extend_never_exceeds_forced(monkeypatch):
     async def fake_log_activity(*args, **kwargs):
         logs.append((args, kwargs))
 
+    async def _noop_ws(*_a, **_k):
+        return None
+
     monkeypatch.setattr(routes, "rfqs_collection", fake_collection)
     monkeypatch.setattr(routes, "log_activity", fake_log_activity)
+    monkeypatch.setattr(routes.ws_manager, "broadcast", _noop_ws)
 
     extended = await routes.check_and_extend_auction(
         rfq_id, doc, "Bid received from Carrier A"
@@ -160,8 +177,12 @@ async def test_check_and_extend_at_window_start_extends(monkeypatch):
     async def fake_log_activity(*args, **kwargs):
         logs.append((args, kwargs))
 
+    async def _noop_ws(*_a, **_k):
+        return None
+
     monkeypatch.setattr(routes, "rfqs_collection", fake_collection)
     monkeypatch.setattr(routes, "log_activity", fake_log_activity)
+    monkeypatch.setattr(routes.ws_manager, "broadcast", _noop_ws)
     monkeypatch.setattr(routes, "datetime", FrozenDateTime)
     FrozenDateTime.now_value = now
 
@@ -187,8 +208,12 @@ async def test_check_and_extend_at_forced_close_does_not_extend(monkeypatch):
     async def fake_log_activity(*args, **kwargs):
         return None
 
+    async def _noop_ws(*_a, **_k):
+        return None
+
     monkeypatch.setattr(routes, "rfqs_collection", fake_collection)
     monkeypatch.setattr(routes, "log_activity", fake_log_activity)
+    monkeypatch.setattr(routes.ws_manager, "broadcast", _noop_ws)
     monkeypatch.setattr(routes, "datetime", FrozenDateTime)
     FrozenDateTime.now_value = now
 
@@ -214,8 +239,12 @@ async def test_check_and_extend_multiple_consecutive_extensions(monkeypatch):
     async def fake_log_activity(*args, **kwargs):
         logs.append((args, kwargs))
 
+    async def _noop_ws(*_a, **_k):
+        return None
+
     monkeypatch.setattr(routes, "rfqs_collection", fake_collection)
     monkeypatch.setattr(routes, "log_activity", fake_log_activity)
+    monkeypatch.setattr(routes.ws_manager, "broadcast", _noop_ws)
     monkeypatch.setattr(routes, "datetime", FrozenDateTime)
 
     FrozenDateTime.now_value = now
@@ -233,6 +262,56 @@ async def test_check_and_extend_multiple_consecutive_extensions(monkeypatch):
     assert third is True
     assert fake_collection.docs[object_id]["current_close_time"] == now + timedelta(minutes=10)
     assert len(logs) == 3
+
+
+@pytest.mark.asyncio
+async def test_check_and_extend_concurrent_callers_only_one_extension(monkeypatch):
+    """Two overlapping extend attempts: atomic update on current_close_time ensures a single +5m bump."""
+    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    object_id = "doc-concurrent"
+    current_close = now + timedelta(minutes=2)
+    doc = {
+        "_id": object_id,
+        "current_close_time": current_close,
+        "forced_close_time": now + timedelta(hours=1),
+        "trigger_window_minutes": 10,
+        "extension_duration_minutes": 5,
+    }
+    fake_collection = FakeCollection({object_id: doc})
+    orig_find = fake_collection.find_one
+    orig_update = fake_collection.update_one
+
+    async def find_one_yield(*args, **kwargs):
+        await asyncio.sleep(0)
+        return await orig_find(*args, **kwargs)
+
+    async def update_one_yield(*args, **kwargs):
+        await asyncio.sleep(0)
+        return await orig_update(*args, **kwargs)
+
+    fake_collection.find_one = find_one_yield
+    fake_collection.update_one = update_one_yield
+    logs = []
+
+    async def fake_log_activity(*args, **kwargs):
+        logs.append(1)
+
+    async def _noop_ws(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(routes, "rfqs_collection", fake_collection)
+    monkeypatch.setattr(routes, "log_activity", fake_log_activity)
+    monkeypatch.setattr(routes.ws_manager, "broadcast", _noop_ws)
+    monkeypatch.setattr(routes, "datetime", FrozenDateTime)
+    FrozenDateTime.now_value = now
+
+    a = routes.check_and_extend_auction("rfq-1", doc, "a")
+    b = routes.check_and_extend_auction("rfq-1", doc, "b")
+    r1, r2 = await asyncio.gather(a, b)
+    assert (r1, r2).count(True) == 1
+    assert (r1, r2).count(False) == 1
+    assert len(logs) == 1
+    assert fake_collection.docs[object_id]["current_close_time"] == current_close + timedelta(minutes=5)
 
 
 @pytest.mark.asyncio
@@ -344,3 +423,34 @@ async def test_create_rfq_rejects_forced_close_not_greater(monkeypatch):
         await routes.create_rfq(payload, user)
     assert exc.value.status_code == 400
     assert exc.value.detail == "Forced close time must be later than bid close time"
+
+
+@pytest.mark.asyncio
+async def test_award_rfq_rejects_active_auction(monkeypatch):
+    now = datetime.now(timezone.utc)
+    rfq = make_active_rfq(now)
+    rfq["awarded_bid_id"] = None
+    rfq_id = str(rfq["_id"])
+    rfqs = FakeCollection({rfq["_id"]: rfq})
+    class FakeBids:
+        async def find_one(self, query, sort=None):
+            if query.get("_id") == "bid-1" and query.get("rfq_id") == rfq_id:
+                return {"_id": "bid-1", "rfq_id": rfq_id, "carrier_name": "supplier", "total_price": 100.0}
+            return None
+
+        async def count_documents(self, query):
+            return 0
+
+    bids = FakeBids()
+
+    async def fake_update_status(doc):
+        return doc["status"]
+
+    monkeypatch.setattr(routes, "rfqs_collection", rfqs)
+    monkeypatch.setattr(routes, "bids_collection", bids)
+    monkeypatch.setattr(routes, "_update_status_with_logging", fake_update_status)
+    user = auth.UserPrincipal(username="buyer", role=auth.UserRole.BUYER)
+
+    with pytest.raises(HTTPException) as exc:
+        await routes.award_rfq(rfq_id, routes.AwardRequest(bid_id="bid-1", award_note=""), user)
+    assert exc.value.status_code == 400

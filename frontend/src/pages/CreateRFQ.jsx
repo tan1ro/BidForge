@@ -24,6 +24,10 @@ const TRIGGER_OPTIONS = [
   { value: 'rank_change', label: 'Any Supplier Rank Change in Last X Minutes' },
   { value: 'l1_change', label: 'Lowest Bidder (L1) Rank Change in Last X Minutes' },
 ];
+const SUPPLIER_VISIBILITY_OPTIONS = [
+  { value: "full_rank", label: "Full rank visibility" },
+  { value: "masked_competitor", label: "Masked competitor bids" },
+];
 const DATE_FIELDS = ["bid_start_time", "bid_close_time", "forced_close_time", "pickup_date"];
 const TECHNICAL_SPEC_MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024;
 
@@ -192,10 +196,12 @@ export default function CreateRFQ() {
     starting_price: '',
     minimum_decrement: '',
     technical_specs_attachment: '',
+    technical_specs_url: '',
     technical_specs_file_name: '',
     technical_specs_content_type: '',
-    technical_specs_file_base64: '',
+    technical_specs_file_size_bytes: 0,
     loading_unloading_notes: '',
+    supplier_visibility_mode: "full_rank",
   });
 
   async function handleTechnicalSpecUpload(file) {
@@ -204,7 +210,7 @@ export default function CreateRFQ() {
         ...prev,
         technical_specs_file_name: "",
         technical_specs_content_type: "",
-        technical_specs_file_base64: "",
+        technical_specs_file_size_bytes: 0,
       }));
       return;
     }
@@ -212,21 +218,11 @@ export default function CreateRFQ() {
       setError("Technical specs file must be 5MB or smaller");
       return;
     }
-    const base64 = await new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const result = String(reader.result || "");
-        const encoded = result.includes(",") ? result.split(",")[1] : "";
-        resolve(encoded);
-      };
-      reader.onerror = () => reject(new Error("Failed to read file"));
-      reader.readAsDataURL(file);
-    });
     setForm((prev) => ({
       ...prev,
       technical_specs_file_name: file.name,
       technical_specs_content_type: file.type || "application/octet-stream",
-      technical_specs_file_base64: String(base64),
+      technical_specs_file_size_bytes: file.size,
       technical_specs_attachment: file.name,
     }));
     setError("");
@@ -400,7 +396,8 @@ export default function CreateRFQ() {
                 </Grid>
                 <Grid size={{ xs: 12, md: 6 }}>
                   <Stack spacing={1}>
-                    <TextField fullWidth name="technical_specs_attachment" label="Technical Specs Attachment (link or filename)" value={form.technical_specs_attachment} onChange={handleChange} helperText="Paste URL/path or upload a file below" />
+                    <TextField fullWidth name="technical_specs_attachment" label="Technical Specs Attachment (label)" value={form.technical_specs_attachment} onChange={handleChange} helperText="Display label for attached technical specs" />
+                    <TextField fullWidth name="technical_specs_url" label="Technical Specs URL" value={form.technical_specs_url} onChange={handleChange} helperText="External link or uploaded file data URL" />
                     <Button component="label" variant="outlined">
                       Upload technical specs file
                       <input
@@ -430,6 +427,18 @@ export default function CreateRFQ() {
                     multiline
                     minRows={2}
                   />
+                </Grid>
+                <Grid size={{ xs: 12, md: 6 }}>
+                  <TextField
+                    select
+                    fullWidth
+                    name="supplier_visibility_mode"
+                    label="Supplier Visibility Mode"
+                    value={form.supplier_visibility_mode}
+                    onChange={handleChange}
+                  >
+                    {SUPPLIER_VISIBILITY_OPTIONS.map((opt) => <MenuItem key={opt.value} value={opt.value}>{opt.label}</MenuItem>)}
+                  </TextField>
                 </Grid>
               </Grid>
               <Stack direction="row" justifyContent="flex-end" spacing={1.5}>

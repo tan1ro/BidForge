@@ -7,12 +7,10 @@ import {
   Card,
   CardContent,
   Chip,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogTitle,
   Grid,
   MenuItem,
+  Skeleton,
+  Snackbar,
   Stack,
   Tab,
   Tabs,
@@ -35,58 +33,32 @@ import ArrowBackOutlinedIcon from "@mui/icons-material/ArrowBackOutlined";
 import SendOutlinedIcon from "@mui/icons-material/SendOutlined";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import PauseCircleOutlineOutlinedIcon from "@mui/icons-material/PauseCircleOutlineOutlined";
-import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
-import { getRFQ, getBids, getActivity, submitBid, updateRFQ, pauseRFQ } from "../api";
+import DownloadOutlinedIcon from "@mui/icons-material/DownloadOutlined";
+import WorkspacePremiumOutlinedIcon from "@mui/icons-material/WorkspacePremiumOutlined";
+import {
+  getRFQ,
+  getBids,
+  getActivity,
+  updateRFQ,
+  pauseRFQ,
+  awardRFQ,
+  exportActivity,
+  exportBids,
+  getWebSocketBase,
+} from "../api";
 import { parseApiError } from "../utils/errorHandling";
-
-const TRIGGER_LABELS = {
-  bid_received: "Bid received in trigger window",
-  rank_change: "Any supplier rank change",
-  l1_change: "L1 rank change only",
-};
-
-const STATUS_LABELS = {
-  upcoming: "Upcoming",
-  active: "Active",
-  paused: "Paused",
-  closed: "Closed",
-  force_closed: "Force closed",
-};
-const TERMINAL_STATUSES = new Set(["closed", "force_closed"]);
-
-function toLocalDateTimeInputValue(dateLike) {
-  const date = new Date(dateLike);
-  if (Number.isNaN(date.getTime())) return "";
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
-
-function formatDate(dateStr) {
-  return new Date(dateStr).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
-}
-
-function formatCurrency(val) {
-  if (val == null) return "—";
-  return `₹${val.toLocaleString("en-IN", { minimumFractionDigits: 2 })}`;
-}
-
-function openBase64File(base64, contentType, fileName) {
-  if (!base64) return;
-  const url = `data:${contentType || "application/octet-stream"};base64,${base64}`;
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = fileName || "technical-spec";
-  anchor.click();
-}
-
-function getTimeRemaining(targetDate, nowMs = Date.now()) {
-  const diff = new Date(targetDate).getTime() - nowMs;
-  if (diff <= 0) return { expired: true, text: "Expired" };
-  const hours = Math.floor(diff / (1000 * 60 * 60));
-  const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-  const seconds = Math.floor((diff % (1000 * 60)) / 1000);
-  return { expired: false, urgent: diff < 5 * 60 * 1000, text: `${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}` };
-}
+import {
+  TRIGGER_LABELS,
+  STATUS_LABELS,
+  TERMINAL_STATUSES,
+  formatDate,
+  formatCurrency,
+  openFileLink,
+  getTimeRemaining,
+} from "../utils/auctionFormatters";
+import BidFormDialog from "../components/auction/BidFormDialog";
+import EditRFQDialog from "../components/auction/EditRFQDialog";
+import AwardWinnerDialog from "../components/auction/AwardWinnerDialog";
 
 function getActivityMeta(eventType) {
   switch (eventType) {
@@ -118,10 +90,16 @@ export default function AuctionDetail({ role }) {
   const [activeTab, setActiveTab] = useState("bids");
   const [showBidForm, setShowBidForm] = useState(false);
   const [showEditForm, setShowEditForm] = useState(false);
+  const [showAwardDialog, setShowAwardDialog] = useState(false);
   const [busyAction, setBusyAction] = useState(false);
   const [timer, setTimer] = useState({ text: "--:--:--", urgent: false });
-  const [toast, setToast] = useState(null);
+  const [snack, setSnack] = useState({ open: false, message: "", severity: "success" });
+  const [activityEventType, setActivityEventType] = useState("");
   const [serverOffsetMs, setServerOffsetMs] = useState(0);
+
+  const showToastMessage = useCallback((message, type = "success") => {
+    setSnack({ open: true, message, severity: type === "error" ? "error" : "success" });
+  }, []);
 
   const loadData = useCallback(async () => {
     try {
@@ -129,7 +107,11 @@ export default function AuctionDetail({ role }) {
       const [rfqRes, bidsRes, actRes] = await Promise.all([
         getRFQ(id),
         getBids(id, { page: bidsMeta.page, page_size: bidsMeta.page_size }),
-        getActivity(id, { page: activityMeta.page, page_size: activityMeta.page_size }),
+        getActivity(id, {
+          page: activityMeta.page,
+          page_size: activityMeta.page_size,
+          event_type: activityEventType || undefined,
+        }),
       ]);
       setRfq(rfqRes.data);
       if (rfqRes.data?.server_time) {
@@ -146,26 +128,41 @@ export default function AuctionDetail({ role }) {
     } finally {
       setLoading(false);
     }
-  }, [id, bidsMeta.page, bidsMeta.page_size, activityMeta.page, activityMeta.page_size]);
+  }, [id, bidsMeta.page, bidsMeta.page_size, activityMeta.page, activityMeta.page_size, activityEventType]);
 
   useEffect(() => {
-    const bootstrap = setTimeout(() => void loadData(), 0);
+    void loadData();
+  }, [loadData]);
+
+  useEffect(() => {
     const token = typeof localStorage?.getItem === "function" ? localStorage.getItem("auth_token") : null;
-    const ws = token ? new WebSocket(`ws://localhost:8000/api/ws/rfqs/${id}`, ["token", token]) : null;
+    const wsBase = getWebSocketBase();
+    const ws = token ? new WebSocket(`${wsBase}/api/ws/rfqs/${id}`, ["token", token]) : null;
     let isEffectActive = true;
     if (ws) {
       ws.onopen = () => {
         if (!isEffectActive) ws.close();
       };
-      ws.onmessage = () => {
-        if (isEffectActive) void loadData();
+      ws.onmessage = (ev) => {
+        if (!isEffectActive) return;
+        try {
+          const msg = JSON.parse(typeof ev.data === "string" ? ev.data : "");
+          if (msg?.type === "time_extended") {
+            setSnack((s) => ({
+              ...s,
+              open: true,
+              severity: "info",
+              message: `Auction extended. New close (UTC) updated — refresh in progress.`,
+            }));
+          }
+        } catch {
+          /* ignore */
+        }
+        void loadData();
       };
     }
-    const interval = setInterval(loadData, 20000);
     return () => {
       isEffectActive = false;
-      clearTimeout(bootstrap);
-      clearInterval(interval);
       if (ws && ws.readyState === WebSocket.OPEN) ws.close();
     };
   }, [loadData, id]);
@@ -182,12 +179,16 @@ export default function AuctionDetail({ role }) {
     return () => clearInterval(interval);
   }, [rfq, serverOffsetMs]);
 
-  function showToastMessage(message, type = "success") {
-    setToast({ message, type });
-    setTimeout(() => setToast(null), 3000);
+  if (loading) {
+    return (
+      <Stack spacing={1.5} sx={{ maxWidth: 900 }}>
+        <Skeleton variant="text" width={120} height={32} />
+        <Skeleton variant="text" width="60%" height={40} />
+        <Skeleton variant="rectangular" height={160} sx={{ borderRadius: 1 }} />
+        <Skeleton variant="rectangular" height={240} sx={{ borderRadius: 1 }} />
+      </Stack>
+    );
   }
-
-  if (loading) return <Typography>Loading auction details...</Typography>;
   if (loadError) {
     return (
       <Alert
@@ -231,14 +232,58 @@ export default function AuctionDetail({ role }) {
             {TERMINAL_STATUSES.has(rfq.status) && rfq.winner_carrier && (
               <Chip size="small" color="success" label={`Winner: ${rfq.winner_carrier}`} />
             )}
+            {rfq.awarded_supplier && (
+              <Chip size="small" color="secondary" label={`Awarded: ${rfq.awarded_supplier}`} />
+            )}
           </Stack>
           {TERMINAL_STATUSES.has(rfq.status) && rfq.winning_bid_total != null && (
             <Typography variant="caption" color="text.secondary">
               Winning total: {formatCurrency(rfq.winning_bid_total)}
             </Typography>
           )}
+          {rfq.awarded_at && (
+            <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+              Awarded at: {formatDate(rfq.awarded_at)}{rfq.award_note ? ` - ${rfq.award_note}` : ""}
+            </Typography>
+          )}
         </Box>
         <Stack direction="row" spacing={1}>
+          {role === "buyer" && (
+            <>
+              <Button
+                variant="outlined"
+                startIcon={<DownloadOutlinedIcon />}
+                onClick={async () => {
+                  try {
+                    const response = await exportActivity(id, { format: "csv" });
+                    const blobUrl = URL.createObjectURL(response.data);
+                    openFileLink(blobUrl, `${rfq.reference_id || "rfq"}-activity.csv`);
+                    setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+                  } catch (err) {
+                    showToastMessage(parseApiError(err, "Failed to export activity timeline"), "error");
+                  }
+                }}
+              >
+                Export Timeline
+              </Button>
+              <Button
+                variant="outlined"
+                startIcon={<DownloadOutlinedIcon />}
+                onClick={async () => {
+                  try {
+                    const response = await exportBids(id, { format: "csv" });
+                    const blobUrl = URL.createObjectURL(response.data);
+                    openFileLink(blobUrl, `${rfq.reference_id || "rfq"}-bids.csv`);
+                    setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+                  } catch (err) {
+                    showToastMessage(parseApiError(err, "Failed to export bids"), "error");
+                  }
+                }}
+              >
+                Export bids
+              </Button>
+            </>
+          )}
           {canManageAuction && (
             <>
               <Button variant="outlined" startIcon={<EditOutlinedIcon />} onClick={() => setShowEditForm(true)}>
@@ -265,6 +310,11 @@ export default function AuctionDetail({ role }) {
                 Pause auction
               </Button>
             </>
+          )}
+          {role === "buyer" && TERMINAL_STATUSES.has(rfq.status) && !rfq.awarded_bid_id && bids.length > 0 && (
+            <Button variant="contained" color="secondary" startIcon={<WorkspacePremiumOutlinedIcon />} onClick={() => setShowAwardDialog(true)}>
+              Award Winner
+            </Button>
           )}
           {rfq.status === "active" && role === "supplier" && (
             <Button variant="contained" startIcon={<SendOutlinedIcon />} onClick={() => setShowBidForm(true)}>
@@ -335,7 +385,9 @@ export default function AuctionDetail({ role }) {
               {activeTab === "bids" && (
                 <>
                   {bids.length === 0 ? (
-                    <Alert severity="info">No bids submitted yet.</Alert>
+                    <Alert severity="info">
+                      No bids yet. Suppliers can submit quotes while the auction is active. Share the auction link and monitor rank changes in real time.
+                    </Alert>
                   ) : (
                     <TableContainer>
                       <Table size="small">
@@ -393,6 +445,26 @@ export default function AuctionDetail({ role }) {
 
               {activeTab === "activity" && (
                 <>
+                  <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mb: 2 }} alignItems={{ sm: "center" }}>
+                    <TextField
+                      size="small"
+                      select
+                      label="Event type"
+                      value={activityEventType}
+                      onChange={(e) => {
+                        setActivityEventType(e.target.value);
+                        setActivityMeta((m) => ({ ...m, page: 1 }));
+                      }}
+                      sx={{ minWidth: 220 }}
+                    >
+                      <MenuItem value="">All events</MenuItem>
+                      <MenuItem value="time_extended">Time extended</MenuItem>
+                      <MenuItem value="bid_submitted">Bid submitted</MenuItem>
+                      <MenuItem value="rfq_created">RFQ created</MenuItem>
+                      <MenuItem value="auction_closed">Auction closed</MenuItem>
+                      <MenuItem value="rfq_updated">RFQ updated</MenuItem>
+                    </TextField>
+                  </Stack>
                   {activity.length === 0 ? (
                     <Alert severity="info">No activity recorded yet.</Alert>
                   ) : (
@@ -452,16 +524,17 @@ export default function AuctionDetail({ role }) {
                   <Typography variant="body2"><strong>Starting Price:</strong> {formatCurrency(rfq.starting_price)}</Typography>
                   <Typography variant="body2"><strong>Minimum Decrement:</strong> {formatCurrency(rfq.minimum_decrement)}</Typography>
                   <Typography variant="body2"><strong>Specs Attachment:</strong> {rfq.technical_specs_attachment || "Not provided"}</Typography>
-                  {rfq.technical_specs_file_base64 && (
+                  {rfq.technical_specs_url && (
                     <Button
                       size="small"
                       variant="text"
                       sx={{ px: 0, justifyContent: "flex-start" }}
-                      onClick={() => openBase64File(rfq.technical_specs_file_base64, rfq.technical_specs_content_type, rfq.technical_specs_file_name)}
+                      onClick={() => openFileLink(rfq.technical_specs_url, rfq.technical_specs_file_name)}
                     >
-                      Download uploaded technical specs
+                      Open technical specs
                     </Button>
                   )}
+                  <Typography variant="body2"><strong>Supplier Visibility:</strong> {rfq.supplier_visibility_mode === "masked_competitor" ? "Masked competitor bids" : "Full rank visibility"}</Typography>
                   <Typography variant="body2"><strong>Loading Instructions:</strong> {rfq.loading_unloading_notes || "Not provided"}</Typography>
                   <Typography variant="caption" color="text.secondary">
                     Times shown in {timezoneLabel}. Backend stores UTC.
@@ -475,6 +548,7 @@ export default function AuctionDetail({ role }) {
 
       {showBidForm && (
         <BidFormDialog
+          rfq={rfq}
           rfqId={id}
           onClose={() => setShowBidForm(false)}
           onSuccess={() => {
@@ -501,275 +575,41 @@ export default function AuctionDetail({ role }) {
           }}
         />
       )}
-
-      {toast && (
-        <Alert
-          severity={toast.type === "error" ? "error" : "success"}
-          variant="filled"
-          sx={{ position: "fixed", right: 24, bottom: 24, zIndex: 1400, maxWidth: 360 }}
-        >
-          {toast.message}
-        </Alert>
+      {showAwardDialog && (
+        <AwardWinnerDialog
+          bids={bids}
+          onClose={() => setShowAwardDialog(false)}
+          onSubmit={async ({ bidId, awardNote }) => {
+            try {
+              await awardRFQ(id, { bid_id: bidId, award_note: awardNote });
+              setShowAwardDialog(false);
+              await loadData();
+              showToastMessage("Winner awarded successfully.");
+            } catch (err) {
+              showToastMessage(parseApiError(err, "Failed to award winner"), "error");
+            }
+          }}
+        />
       )}
-    </Stack>
-  );
-}
 
-function EditRFQDialog({ rfq, onClose, onSuccess }) {
-  const [form, setForm] = useState({
-    name: rfq.name || "",
-    material: rfq.material || "",
-    quantity: rfq.quantity || "",
-    pickup_location: rfq.pickup_location || "",
-    delivery_location: rfq.delivery_location || "",
-    bid_start_time: toLocalDateTimeInputValue(rfq.bid_start_time),
-    bid_close_time: toLocalDateTimeInputValue(rfq.bid_close_time),
-    forced_close_time: toLocalDateTimeInputValue(rfq.forced_close_time),
-    pickup_date: toLocalDateTimeInputValue(rfq.pickup_date),
-    trigger_window_minutes: String(rfq.trigger_window_minutes ?? 10),
-    extension_duration_minutes: String(rfq.extension_duration_minutes ?? 5),
-    extension_trigger: rfq.extension_trigger || "bid_received",
-    starting_price: String(rfq.starting_price ?? 0),
-    minimum_decrement: String(rfq.minimum_decrement ?? 0),
-  });
-
-  return (
-    <Dialog open onClose={onClose} fullWidth maxWidth="md">
-      <DialogTitle>Edit auction</DialogTitle>
-      <DialogContent>
-        <Grid container spacing={2} sx={{ mt: 0.5 }}>
-          <Grid size={{ xs: 12, md: 6 }}><TextField fullWidth label="RFQ Name" value={form.name} onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))} /></Grid>
-          <Grid size={{ xs: 12, md: 6 }}><TextField fullWidth label="Material" value={form.material} onChange={(e) => setForm((p) => ({ ...p, material: e.target.value }))} /></Grid>
-          <Grid size={{ xs: 12, md: 6 }}><TextField fullWidth label="Quantity" value={form.quantity} onChange={(e) => setForm((p) => ({ ...p, quantity: e.target.value }))} /></Grid>
-          <Grid size={{ xs: 12, md: 6 }}><TextField fullWidth label="Pickup Location" value={form.pickup_location} onChange={(e) => setForm((p) => ({ ...p, pickup_location: e.target.value }))} /></Grid>
-          <Grid size={{ xs: 12, md: 6 }}><TextField fullWidth label="Delivery Location" value={form.delivery_location} onChange={(e) => setForm((p) => ({ ...p, delivery_location: e.target.value }))} /></Grid>
-          <Grid size={{ xs: 12, md: 6 }}><TextField fullWidth type="datetime-local" label="Bid Start" InputLabelProps={{ shrink: true }} value={form.bid_start_time} onChange={(e) => setForm((p) => ({ ...p, bid_start_time: e.target.value }))} /></Grid>
-          <Grid size={{ xs: 12, md: 6 }}><TextField fullWidth type="datetime-local" label="Bid Close" InputLabelProps={{ shrink: true }} value={form.bid_close_time} onChange={(e) => setForm((p) => ({ ...p, bid_close_time: e.target.value }))} /></Grid>
-          <Grid size={{ xs: 12, md: 6 }}><TextField fullWidth type="datetime-local" label="Forced Close" InputLabelProps={{ shrink: true }} value={form.forced_close_time} onChange={(e) => setForm((p) => ({ ...p, forced_close_time: e.target.value }))} /></Grid>
-          <Grid size={{ xs: 12, md: 6 }}><TextField fullWidth type="datetime-local" label="Pickup Date" InputLabelProps={{ shrink: true }} value={form.pickup_date} onChange={(e) => setForm((p) => ({ ...p, pickup_date: e.target.value }))} /></Grid>
-          <Grid size={{ xs: 12, md: 4 }}><TextField fullWidth type="number" label="Trigger Window (min)" value={form.trigger_window_minutes} onChange={(e) => setForm((p) => ({ ...p, trigger_window_minutes: e.target.value }))} /></Grid>
-          <Grid size={{ xs: 12, md: 4 }}><TextField fullWidth type="number" label="Extension Duration (min)" value={form.extension_duration_minutes} onChange={(e) => setForm((p) => ({ ...p, extension_duration_minutes: e.target.value }))} /></Grid>
-          <Grid size={{ xs: 12, md: 4 }}>
-            <TextField select fullWidth label="Extension Trigger" value={form.extension_trigger} onChange={(e) => setForm((p) => ({ ...p, extension_trigger: e.target.value }))} helperText="Choose what event can auto-extend the British Auction in trigger window.">
-              {Object.entries(TRIGGER_LABELS).map(([value, label]) => <MenuItem key={value} value={value}>{label}</MenuItem>)}
-            </TextField>
-            <Stack direction="row" spacing={0.5} alignItems="center" sx={{ mt: 0.5 }}>
-              <InfoOutlinedIcon fontSize="inherit" />
-              <Typography variant="caption" color="text.secondary">
-                `Bid received` extends on any bid, `Rank change` extends when supplier order changes, and `L1 change` extends only when lowest bidder changes.
-              </Typography>
-            </Stack>
-          </Grid>
-          <Grid size={{ xs: 12, md: 6 }}><TextField fullWidth type="number" label="Starting Price (INR)" value={form.starting_price} onChange={(e) => setForm((p) => ({ ...p, starting_price: e.target.value }))} /></Grid>
-          <Grid size={{ xs: 12, md: 6 }}><TextField fullWidth type="number" label="Minimum Decrement (INR)" value={form.minimum_decrement} onChange={(e) => setForm((p) => ({ ...p, minimum_decrement: e.target.value }))} /></Grid>
-        </Grid>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose}>Cancel</Button>
-        <Button
-          variant="contained"
-          onClick={() => onSuccess({
-            ...form,
-            bid_start_time: new Date(form.bid_start_time).toISOString(),
-            bid_close_time: new Date(form.bid_close_time).toISOString(),
-            forced_close_time: new Date(form.forced_close_time).toISOString(),
-            pickup_date: new Date(form.pickup_date).toISOString(),
-            trigger_window_minutes: Number(form.trigger_window_minutes),
-            extension_duration_minutes: Number(form.extension_duration_minutes),
-            starting_price: Number(form.starting_price),
-            minimum_decrement: Number(form.minimum_decrement),
-          })}
+      <Snackbar
+        open={snack.open}
+        autoHideDuration={6000}
+        onClose={(_, reason) => {
+          if (reason === "clickaway") return;
+          setSnack((s) => ({ ...s, open: false }));
+        }}
+        anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+      >
+        <Alert
+          onClose={() => setSnack((s) => ({ ...s, open: false }))}
+          severity={snack.severity}
+          variant="filled"
+          elevation={4}
         >
-          Save changes
-        </Button>
-      </DialogActions>
-    </Dialog>
-  );
-}
-
-function BidFormDialog({ rfqId, onClose, onSuccess, onError }) {
-  const [loading, setLoading] = useState(false);
-  const [formError, setFormError] = useState("");
-  const [form, setForm] = useState({
-    carrier_name: "",
-    freight_charges: "",
-    origin_charges: "",
-    destination_charges: "",
-    transit_time: "1",
-    validity: "7 days",
-    vehicle_type: "",
-    capacity_tons: "",
-    insurance_included: false,
-  });
-
-  const freight = Number(form.freight_charges || 0);
-  const origin = Number(form.origin_charges || 0);
-  const destination = Number(form.destination_charges || 0);
-  const transitDays = Number(form.transit_time || 0);
-  const total = freight + origin + destination;
-  const isSubmitDisabled =
-    loading ||
-    !form.carrier_name.trim() ||
-    !Number.isFinite(total) ||
-    total <= 0 ||
-    !Number.isFinite(transitDays) ||
-    transitDays < 1;
-
-  function handleChange(name, value) {
-    setForm((prev) => ({ ...prev, [name]: value }));
-    if (formError) setFormError("");
-  }
-
-  async function handleSubmit(e) {
-    e.preventDefault();
-    setFormError("");
-    if (!form.carrier_name.trim()) {
-      setFormError("Carrier name is required");
-      return;
-    }
-    if (!Number.isFinite(total) || total <= 0) {
-      setFormError("Total bid amount must be greater than zero");
-      return;
-    }
-    if (!Number.isFinite(transitDays) || transitDays < 1) {
-      setFormError("Transit time must be at least 1 day");
-      return;
-    }
-
-    setLoading(true);
-    try {
-      await submitBid(rfqId, {
-        carrier_name: form.carrier_name.trim(),
-        freight_charges: freight || 0,
-        origin_charges: origin || 0,
-        destination_charges: destination || 0,
-        transit_time: Math.max(1, Math.trunc(transitDays)),
-        validity: form.validity,
-        vehicle_type: form.vehicle_type.trim(),
-        capacity_tons: Number(form.capacity_tons || 0),
-        insurance_included: Boolean(form.insurance_included),
-      });
-      onSuccess();
-    } catch (err) {
-      onError(parseApiError(err, "Failed to submit bid"));
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  return (
-    <Dialog open onClose={onClose} fullWidth maxWidth="sm">
-      <DialogTitle>Submit bid</DialogTitle>
-      <Box component="form" onSubmit={handleSubmit}>
-        <DialogContent>
-          <Stack spacing={2}>
-            {formError && <Alert severity="error">{formError}</Alert>}
-            <TextField
-              label="Carrier name"
-              value={form.carrier_name}
-              onChange={(e) => handleChange("carrier_name", e.target.value)}
-              required
-              fullWidth
-              autoComplete="organization"
-              placeholder="Enter carrier/company name"
-            />
-            <Grid container spacing={2}>
-              <Grid size={{ xs: 12, sm: 4 }}>
-                <TextField
-                  label="Freight charges"
-                  type="number"
-                  value={form.freight_charges}
-                  onChange={(e) => handleChange("freight_charges", e.target.value)}
-                  fullWidth
-                  inputProps={{ min: 0, step: "0.01" }}
-                />
-              </Grid>
-              <Grid size={{ xs: 12, sm: 4 }}>
-                <TextField
-                  label="Origin charges"
-                  type="number"
-                  value={form.origin_charges}
-                  onChange={(e) => handleChange("origin_charges", e.target.value)}
-                  fullWidth
-                  inputProps={{ min: 0, step: "0.01" }}
-                />
-              </Grid>
-              <Grid size={{ xs: 12, sm: 4 }}>
-                <TextField
-                  label="Destination charges"
-                  type="number"
-                  value={form.destination_charges}
-                  onChange={(e) => handleChange("destination_charges", e.target.value)}
-                  fullWidth
-                  inputProps={{ min: 0, step: "0.01" }}
-                />
-              </Grid>
-            </Grid>
-            <TextField
-              label="Transit time (days)"
-              type="number"
-              value={form.transit_time}
-              onChange={(e) => handleChange("transit_time", e.target.value)}
-              fullWidth
-              inputProps={{ min: 1, step: 1 }}
-            />
-            <TextField
-              select
-              label="Quote validity"
-              value={form.validity}
-              onChange={(e) => handleChange("validity", e.target.value)}
-              fullWidth
-            >
-              <MenuItem value="7 days">7 days</MenuItem>
-              <MenuItem value="15 days">15 days</MenuItem>
-              <MenuItem value="30 days">30 days</MenuItem>
-            </TextField>
-            <Grid container spacing={2}>
-              <Grid size={{ xs: 12, sm: 6 }}>
-                <TextField
-                  label="Vehicle type"
-                  value={form.vehicle_type}
-                  onChange={(e) => handleChange("vehicle_type", e.target.value)}
-                  fullWidth
-                  placeholder="e.g. 20 ft Truck"
-                />
-              </Grid>
-              <Grid size={{ xs: 12, sm: 6 }}>
-                <TextField
-                  label="Capacity (tons)"
-                  type="number"
-                  value={form.capacity_tons}
-                  onChange={(e) => handleChange("capacity_tons", e.target.value)}
-                  fullWidth
-                  inputProps={{ min: 0, step: "0.1" }}
-                />
-              </Grid>
-            </Grid>
-            <TextField
-              select
-              label="Insurance"
-              value={form.insurance_included ? "yes" : "no"}
-              onChange={(e) => handleChange("insurance_included", e.target.value === "yes")}
-              fullWidth
-            >
-              <MenuItem value="yes">Included</MenuItem>
-              <MenuItem value="no">Not Included</MenuItem>
-            </TextField>
-            <Typography variant="caption" color="text.secondary">
-              Total formula: Freight + Origin + Destination
-            </Typography>
-            <Typography variant="subtitle2">
-              Total amount: {formatCurrency(total)} ({formatCurrency(freight)} + {formatCurrency(origin)} + {formatCurrency(destination)})
-            </Typography>
-          </Stack>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={onClose}>Cancel</Button>
-          <Button type="submit" variant="contained" disabled={isSubmitDisabled}>
-            Submit
-          </Button>
-        </DialogActions>
-      </Box>
-    </Dialog>
+          {snack.message}
+        </Alert>
+      </Snackbar>
+    </Stack>
   );
 }

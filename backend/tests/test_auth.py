@@ -3,7 +3,6 @@ import sys
 
 import pytest
 from fastapi import HTTPException
-from passlib.context import CryptContext
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
@@ -64,7 +63,7 @@ def test_user_signup_role_normalization():
     from models import UserSignup
 
     payload = UserSignup(
-        username="johnsmith",
+        company_name="John Smith Logistics",
         email="john@example.com",
         password="secret123",
         role="SUPPLIER",
@@ -79,7 +78,7 @@ async def test_login_error_messages(monkeypatch):
     await auth.create_user("charlie", "charlie@example.com", "secret123", auth.UserRole.SUPPLIER)
 
     not_found = await auth.get_login_error("nobody", "whatever")
-    assert not_found == "User or email does not exist"
+    assert not_found == "Company name or email does not exist"
 
     wrong_password = await auth.get_login_error("charlie", "badpass")
     assert wrong_password == "Incorrect password"
@@ -114,9 +113,13 @@ def test_verify_password_with_invalid_hash_format_returns_false():
     assert auth.verify_password("secret123", "not-a-valid-hash") is False
 
 
-def test_verify_password_supports_legacy_bcrypt_hash():
-    ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
-    legacy_hash = ctx.hash("secret123")
+def test_verify_password_supports_legacy_bcrypt_hash(monkeypatch):
+    legacy_hash = "$2b$12$examplelegacyhashvalueforbranch"
+    monkeypatch.setattr(
+        auth.legacy_pwd_context,
+        "verify",
+        lambda plain, encoded: plain == "secret123" and encoded == legacy_hash,
+    )
     assert auth.verify_password("secret123", legacy_hash) is True
 
 
