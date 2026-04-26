@@ -82,3 +82,28 @@ async def test_login_error_messages(monkeypatch):
 
     wrong_password = await auth.get_login_error("charlie", "badpass")
     assert wrong_password == "Incorrect password"
+
+
+@pytest.mark.asyncio
+async def test_get_login_error_success_returns_none(monkeypatch):
+    fake = FakeUsersCollection()
+    monkeypatch.setattr(auth, "users_collection", fake)
+    await auth.create_user("diana", "diana@example.com", "secret123", auth.UserRole.BUYER)
+
+    error = await auth.get_login_error("diana", "secret123")
+    assert error is None
+
+
+@pytest.mark.asyncio
+async def test_authenticate_user_wrong_password_returns_none(monkeypatch):
+    fake = FakeUsersCollection()
+    monkeypatch.setattr(auth, "users_collection", fake)
+    await auth.create_user("ed", "ed@example.com", "secret123", auth.UserRole.SUPPLIER)
+
+    authed = await auth.authenticate_user("ed", "wrong-password")
+    assert authed is None
+
+
+def test_hash_password_uses_bcrypt_sha256_prefix():
+    password_hash = auth.hash_password("secret123")
+    assert password_hash.startswith("$bcrypt-sha256$")

@@ -41,7 +41,9 @@ class UserProfileResponse(BaseModel):
 
 
 bearer_scheme = HTTPBearer(auto_error=False)
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Use bcrypt_sha256 to avoid bcrypt's 72-byte password truncation/validation edge cases
+# in some backend versions while keeping bcrypt as the underlying KDF.
+pwd_context = CryptContext(schemes=["bcrypt_sha256"], deprecated="auto")
 
 
 async def authenticate_user(username: str, password: str) -> UserPrincipal | None:
