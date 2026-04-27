@@ -18,6 +18,34 @@ BidForge is a full-stack RFQ and reverse-auction platform for logistics procurem
 - RFQ award workflow after close/force-close.
 - Metrics dashboards and optional AI recommendations.
 
+## User Journeys (Current App)
+
+### RFQ Owner journey
+
+1. Login/signup as `rfqowner`.
+2. Use `Dashboard` for portfolio-level insights and recommendations.
+3. Use `Auctions` page to search/filter/sort RFQs and monitor countdowns.
+4. Create RFQ from `Create RFQ` with:
+   - timeline fields,
+   - extension trigger configuration,
+   - pricing guards (`starting_price`, `minimum_decrement`),
+   - optional technical spec metadata.
+5. Open `Auction Detail` to:
+   - monitor live bids/activity,
+   - edit/pause (when permitted),
+   - export bids/timeline CSV,
+   - award winner after closure.
+6. Use `Success Metrics` page for bids trend, winning-price trend, extension frequency, and extension impact.
+
+### Bidder (Supplier) journey
+
+1. Login/signup as `bidder`.
+2. Use bidder `Dashboard` for participation, rank health, and risk insights.
+3. Browse `Auctions` and open relevant RFQ.
+4. Submit or revise bid in `Auction Detail`.
+5. Receive real-time updates (`bid_updated`, `time_extended`, `status_changed`).
+6. Use `My bids` page for a focused view of own rank, price, and close countdown.
+
 ## Tech Stack
 
 ### Backend
@@ -41,6 +69,54 @@ BidForge is a full-stack RFQ and reverse-auction platform for logistics procurem
 ### Data
 
 - MongoDB
+
+## Architecture Diagram (Current)
+
+```mermaid
+flowchart LR
+    subgraph Client
+      O[RFQ Owner]
+      B[Bidder]
+      FE[React + Vite + MUI]
+    end
+
+    subgraph Backend
+      API[FastAPI Routes]
+      AUTH[JWT + RBAC]
+      RATE[Rate Limiter]
+      WS[WebSocket Manager]
+      SCH[Status Scheduler]
+    end
+
+    DB[(MongoDB)]
+    AI[Gemini Optional]
+
+    O --> FE
+    B --> FE
+    FE -->|REST /api/*| API
+    FE -->|WS /api/ws/rfqs/{id}| WS
+    API --> AUTH
+    API --> RATE
+    API --> DB
+    SCH --> DB
+    SCH --> WS
+    API --> AI
+```
+
+## Auction Lifecycle Diagram
+
+```mermaid
+stateDiagram-v2
+    [*] --> upcoming
+    upcoming --> active: now >= bid_start_time
+    upcoming --> paused: owner pause (window open + no bids)
+    active --> paused: owner pause (window open + no bids)
+    active --> closed: now >= current_close_time
+    active --> force_closed: now >= forced_close_time
+    paused --> force_closed: now >= forced_close_time
+    closed --> [*]
+    force_closed --> [*]
+```
 
 ## Repository Layout
 
@@ -179,6 +255,12 @@ npm run build
   - `rank_change`
   - `l1_change`
 - Extension logic runs only for British-style auction types (e.g. `Reverse Auction (lowest wins)`), not sealed/fixed types.
+
+## Visibility Rules (Owner vs Bidder)
+
+- RFQ Owner can see all bid commercial details.
+- In `masked_competitor` mode, owner-side bidder identities are alias-masked (`Bidder 1`, `Bidder 2`, ...).
+- Bidder sees full details only for self; competitor commercial values are hidden/redacted.
 
 ## Security and Reliability Highlights
 

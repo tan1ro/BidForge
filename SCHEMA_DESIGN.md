@@ -21,6 +21,73 @@ The schema supports:
 - Metrics aggregation workloads.
 - Scheduler coordination in multi-instance environments.
 
+## 1.1) ER Diagram (Current)
+
+```mermaid
+erDiagram
+    USERS ||--o{ RFQS : creates
+    RFQS ||--o{ BIDS : has_current_bids
+    RFQS ||--o{ BID_REVISIONS : has_history
+    RFQS ||--o{ ACTIVITY_LOGS : has_timeline
+    USERS ||--o{ AUDIT_LOGS : performs_actions
+
+    USERS {
+      ObjectId _id
+      string username
+      string email
+      string role
+      object settings
+      string company_url
+      string about_company
+      datetime created_at
+    }
+    RFQS {
+      ObjectId _id
+      string created_by
+      string reference_id
+      string name
+      datetime bid_start_time
+      datetime current_close_time
+      datetime forced_close_time
+      string status
+      string extension_trigger
+      number starting_price
+      number minimum_decrement
+      string quote_reference_carrier_name
+      number quote_reference_freight_charges
+      number quote_reference_origin_charges
+      number quote_reference_destination_charges
+      int quote_reference_transit_time_days
+      string quote_validity_requirement
+    }
+    BIDS {
+      ObjectId _id
+      string rfq_id
+      string carrier_name
+      string carrier_display_name
+      number freight_charges
+      number origin_charges
+      number destination_charges
+      number total_price
+      int rank
+      datetime created_at
+    }
+    BID_REVISIONS {
+      ObjectId _id
+      string rfq_id
+      string bid_id
+      string carrier_name
+      number total_price
+      bool is_revision
+      number previous_total
+      datetime created_at
+    }
+    DISTRIBUTED_LOCKS {
+      ObjectId _id
+      datetime expires_at
+    }
+```
+
 ## 2) Collection: `users`
 
 Purpose: identity, authentication, role authorization, and user preferences.
@@ -280,3 +347,24 @@ MongoDB does not enforce foreign keys; integrity is maintained by service logic.
 - Metrics are powered via aggregation pipelines on RFQ and activity collections.
 - String `rfq_id` linkage is used for joins (`$lookup` with `$toString` where needed).
 - Status is both persisted and recomputed live; consumers should account for real-time computation in read APIs.
+
+## 12) Role-Based Data View Behavior (Supplier/Bidder vs RFQ Owner)
+
+Although Mongo stores full bid records, API responses are role-shaped before sending to UI.
+
+### RFQ Owner view
+
+- Can access all bids for own RFQ.
+- If RFQ `bidder_visibility_mode` is `masked_competitor`, identities are alias-mapped at response/export time.
+
+### Bidder (Supplier) view
+
+- Can access RFQ bid board but:
+  - self bid returns full commercial details,
+  - competitor rows are masked (`carrier_name = Competitor`) and commercial numbers are redacted to zero/hidden placeholders.
+- Bidder-specific participation summary is exposed via `/api/bidder/my-auctions`.
+
+### Implication for documentation/reporting
+
+- Treat Mongo bid rows as canonical source.
+- Treat API response shaping as presentation/security policy layer.

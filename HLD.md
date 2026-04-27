@@ -32,6 +32,26 @@ This document reflects the current implementation in `backend/` and `frontend/`.
 4. Automatic status transitions (`upcoming` -> `active` -> `closed`/`force_closed`) through scheduler + runtime evaluation.
 5. Outcome workflows: winner award, CSV exports, dashboard metrics, auditability.
 
+### Detailed Journey - RFQ Owner
+
+1. Logs in and lands on owner dashboard.
+2. Reviews live portfolio insights (active auctions, zero-bid risk, close-time pressure).
+3. Creates RFQ with timeline, extension settings, starting price, minimum decrement, and visibility mode.
+4. Monitors auction detail with live bid/activity updates via WebSocket.
+5. Optionally edits auction before close, or pauses if permitted by window/bid conditions.
+6. Exports bid and timeline CSV for review/compliance.
+7. Awards winner after `closed`/`force_closed`.
+8. Uses metrics screens for trend analysis and extension impact.
+
+### Detailed Journey - Bidder (Supplier)
+
+1. Logs in and opens bidder dashboard for win/top-3/risk signals.
+2. Browses auctions list with search/filter/sort and live countdowns.
+3. Opens auction detail and submits bid (or revises existing bid).
+4. Receives bid rank/time extension updates in real time.
+5. Uses My Bids page to prioritize near-close opportunities and rank movement.
+6. Continues bidding until close or forced close, then tracks outcome.
+
 ## 3) System Architecture
 
 BidForge uses a 3-tier architecture.
@@ -205,6 +225,84 @@ Supported extension trigger policies per RFQ:
 
 ## 10) Diagrams
 
+### System Architecture (current)
+
+```mermaid
+flowchart LR
+    subgraph Client
+      O[RFQ Owner]
+      B[Bidder]
+      FE[React + Vite + MUI]
+    end
+
+    subgraph Backend
+      API[FastAPI API Layer]
+      AUTH[JWT Auth + RBAC]
+      RATE[In-memory Rate Limiter]
+      SCH[Scheduler + Lock]
+      WS[WebSocket Manager]
+    end
+
+    DB[(MongoDB)]
+    AI[Gemini API Optional]
+
+    O --> FE
+    B --> FE
+    FE -->|REST /api/*| API
+    FE -->|WS /api/ws/rfqs/{id}| WS
+    API --> AUTH
+    API --> RATE
+    API --> DB
+    API -->|/dashboard/recommendations| AI
+    SCH --> DB
+    SCH --> WS
+```
+
 ![System Architecture](frontend/src/assets/diagram-system.svg)
 
+### Auction Lifecycle and Extension
+
+```mermaid
+stateDiagram-v2
+    [*] --> upcoming
+    upcoming --> active: now >= bid_start_time
+    upcoming --> paused: owner pause (window open + no bids)
+    active --> paused: owner pause (window open + no bids)
+    active --> closed: now >= current_close_time
+    active --> force_closed: now >= forced_close_time
+    paused --> force_closed: now >= forced_close_time
+    closed --> [*]
+    force_closed --> [*]
+```
+
 ![Auction Flow](frontend/src/assets/diagram-flow.svg)
+
+### Role Flow Diagram
+
+```mermaid
+flowchart LR
+    subgraph Owner["RFQ Owner Flow"]
+        O1[Login]
+        O2[Dashboard]
+        O3[RFQ List]
+        O4[Create RFQ]
+        O5[Auction Detail]
+        O6[Edit/Pause/Export]
+        O7[Award Winner]
+        O8[Metrics]
+    end
+
+    subgraph Bidder["Bidder/Supplier Flow"]
+        B1[Login]
+        B2[Dashboard]
+        B3[RFQ List]
+        B4[Auction Detail]
+        B5[Submit/Revise Bid]
+        B6[My Bids]
+        B7[Track Outcome]
+    end
+
+    O1 --> O2 --> O3 --> O4 --> O5 --> O6 --> O7 --> O8
+    B1 --> B2 --> B3 --> B4 --> B5 --> B6 --> B7
+    B5 --> B4
+```
