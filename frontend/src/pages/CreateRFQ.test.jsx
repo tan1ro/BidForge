@@ -34,22 +34,28 @@ describe("CreateRFQ", () => {
       </MemoryRouter>
     );
 
-    fireEvent.change(screen.getByLabelText("RFQ Title"), { target: { value: "Lane 11 RFQ" } });
-    fireEvent.change(screen.getByLabelText("Material"), { target: { value: "Steel Coils" } });
-    fireEvent.change(screen.getByLabelText("Quantity"), { target: { value: "20 MT" } });
-    fireEvent.change(screen.getByLabelText("Carrier Name"), { target: { value: "Acme Logistics" } });
-    fireEvent.change(screen.getByLabelText("Freight Charges"), { target: { value: "42000" } });
-    fireEvent.change(screen.getByLabelText("Origin Charges"), { target: { value: "1500" } });
-    fireEvent.change(screen.getByLabelText("Destination Charges"), { target: { value: "1200" } });
-    fireEvent.change(screen.getByLabelText("Transit Time (days)"), { target: { value: "3" } });
-    fireEvent.change(screen.getByLabelText("Validity of Quote"), { target: { value: "7 days" } });
+    const changeByName = (name, value) => {
+      const input = document.querySelector(`input[name="${name}"]`);
+      expect(input).not.toBeNull();
+      fireEvent.change(input, { target: { value } });
+    };
 
-    fireEvent.change(screen.getByLabelText("Bid Start Date & Time"), { target: { value: toInputDate(30) } });
-    fireEvent.change(screen.getByLabelText("Bid Close Date & Time"), { target: { value: toInputDate(90) } });
-    fireEvent.change(screen.getByLabelText("Forced Bid Close Date & Time"), { target: { value: toInputDate(120) } });
-    fireEvent.change(screen.getByLabelText("Pickup / Service Date & Time"), { target: { value: toInputDate(180) } });
-    fireEvent.change(screen.getByLabelText("Starting Price (INR)"), { target: { value: "50000" } });
-    fireEvent.change(screen.getByLabelText("Minimum Decrement (INR)"), { target: { value: "500" } });
+    fireEvent.change(screen.getByLabelText(/RFQ Title/i), { target: { value: "Lane 11 RFQ" } });
+    fireEvent.change(screen.getByLabelText(/Material/i), { target: { value: "Steel Coils" } });
+    fireEvent.change(screen.getByLabelText(/Quantity/i), { target: { value: "20 MT" } });
+    fireEvent.change(screen.getByLabelText(/Carrier Name/i), { target: { value: "Acme Logistics" } });
+    fireEvent.change(screen.getByLabelText(/Freight Charges/i), { target: { value: "42000" } });
+    fireEvent.change(screen.getByLabelText(/Origin Charges/i), { target: { value: "1500" } });
+    fireEvent.change(screen.getByLabelText(/Destination Charges/i), { target: { value: "1200" } });
+    fireEvent.change(screen.getByLabelText(/Transit Time \(days\)/i), { target: { value: "3" } });
+    fireEvent.change(screen.getByLabelText(/Validity of Quote/i), { target: { value: "7 days" } });
+
+    changeByName("bid_start_time", toInputDate(30));
+    changeByName("bid_close_time", toInputDate(90));
+    changeByName("forced_close_time", toInputDate(120));
+    changeByName("pickup_date", toInputDate(180));
+    fireEvent.change(screen.getByLabelText(/Starting Price \(INR\)/i), { target: { value: "50000" } });
+    fireEvent.change(screen.getByLabelText(/Minimum Decrement \(INR\)/i), { target: { value: "500" } });
 
     fireEvent.click(screen.getByRole("button", { name: "Create RFQ" }));
 
