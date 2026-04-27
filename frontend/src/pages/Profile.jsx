@@ -21,7 +21,9 @@ import VerifiedUserOutlinedIcon from "@mui/icons-material/VerifiedUserOutlined";
 import MailOutlineOutlinedIcon from "@mui/icons-material/MailOutlineOutlined";
 import CalendarMonthOutlinedIcon from "@mui/icons-material/CalendarMonthOutlined";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
-import { getProfile, getProfileSettings, updateProfileSettings } from "../api";
+import PublicOutlinedIcon from "@mui/icons-material/PublicOutlined";
+import BusinessOutlinedIcon from "@mui/icons-material/BusinessOutlined";
+import { getProfile, getProfileSettings, updateProfile, updateProfileSettings } from "../api";
 import { parseApiError } from "../utils/errorHandling";
 import { formatDate, saveUserSettings } from "../utils/auctionFormatters";
 
@@ -37,6 +39,7 @@ export default function Profile() {
     auto_refresh_seconds: 10,
   });
   const [saving, setSaving] = useState(false);
+  const [savingProfile, setSavingProfile] = useState(false);
   const [savedMessage, setSavedMessage] = useState("");
   const [error, setError] = useState("");
 
@@ -99,6 +102,25 @@ export default function Profile() {
       setError(parseApiError(err, "Failed to update settings"));
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleSaveProfile() {
+    setSavingProfile(true);
+    setSavedMessage("");
+    setError("");
+    try {
+      const payload = {
+        company_url: String(profile.company_url || "").trim(),
+        about_company: String(profile.about_company || "").trim(),
+      };
+      const res = await updateProfile(payload);
+      setProfile(res.data);
+      setSavedMessage("Company profile updated successfully.");
+    } catch (err) {
+      setError(parseApiError(err, "Failed to update company profile"));
+    } finally {
+      setSavingProfile(false);
     }
   }
 
@@ -179,6 +201,67 @@ export default function Profile() {
                 <Typography variant="subtitle2" color="text.secondary">Member Since</Typography>
               </Stack>
               <Typography variant="h6">{formatDate(profile.created_at)}</Typography>
+            </CardContent>
+          </Card>
+        </Grid>
+        <Grid size={{ xs: 12 }}>
+          <Card>
+            <CardContent>
+              <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 2 }}>
+                <BusinessOutlinedIcon color="primary" />
+                <Typography variant="h6">Company Profile</Typography>
+              </Stack>
+              <Grid container spacing={2}>
+                <Grid size={{ xs: 12 }}>
+                  <TextField
+                    fullWidth
+                    label="Company URL"
+                    placeholder="https://your-company.com"
+                    value={profile.company_url || ""}
+                    onChange={(e) => setProfile((prev) => ({ ...prev, company_url: e.target.value }))}
+                  />
+                </Grid>
+                <Grid size={{ xs: 12 }}>
+                  <TextField
+                    fullWidth
+                    multiline
+                    minRows={4}
+                    label="About Company"
+                    placeholder="Brief description shown to bidders during auction bidding."
+                    value={profile.about_company || ""}
+                    onChange={(e) => setProfile((prev) => ({ ...prev, about_company: e.target.value }))}
+                  />
+                </Grid>
+              </Grid>
+              <Stack direction="row" justifyContent="flex-end" sx={{ mt: 2 }}>
+                <Button variant="contained" onClick={handleSaveProfile} disabled={savingProfile}>
+                  {savingProfile ? "Saving..." : "Save company profile"}
+                </Button>
+              </Stack>
+            </CardContent>
+          </Card>
+        </Grid>
+        <Grid size={{ xs: 12 }}>
+          <Card>
+            <CardContent>
+              <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+                <PublicOutlinedIcon color="primary" />
+                <Typography variant="subtitle2" color="text.secondary">Company URL</Typography>
+              </Stack>
+              <Typography variant="body1">{profile.company_url || "Not provided"}</Typography>
+            </CardContent>
+          </Card>
+        </Grid>
+        <Grid size={{ xs: 12 }}>
+          <Card>
+            <CardContent>
+              <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+                <BusinessOutlinedIcon color="primary" />
+                <Typography variant="subtitle2" color="text.secondary">About Company</Typography>
+              </Stack>
+              <Typography variant="body1" sx={{ whiteSpace: "pre-wrap" }}>
+                {profile.about_company || "Not provided"}
+              </Typography>
             </CardContent>
           </Card>
         </Grid>

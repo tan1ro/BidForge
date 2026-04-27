@@ -426,6 +426,53 @@ async def test_create_rfq_rejects_forced_close_not_greater(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_create_rfq_persists_reference_quote_fields(monkeypatch):
+    now = datetime.now(timezone.utc)
+    rfqs = FakeCollection()
+
+    async def fake_log_activity(*args, **kwargs):
+        return None
+
+    async def fake_log_audit(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(routes, "rfqs_collection", rfqs)
+    monkeypatch.setattr(routes, "log_activity", fake_log_activity)
+    monkeypatch.setattr(routes, "log_audit", fake_log_audit)
+
+    payload = routes.RFQCreate(
+        name="RFQ With Reference Quote",
+        material="Steel Coils",
+        quantity="20 MT",
+        bid_start_time=now + timedelta(minutes=10),
+        bid_close_time=now + timedelta(minutes=60),
+        forced_close_time=now + timedelta(minutes=90),
+        pickup_date=now + timedelta(days=1),
+        trigger_window_minutes=10,
+        extension_duration_minutes=5,
+        extension_trigger="bid_received",
+        starting_price=50000,
+        minimum_decrement=500,
+        quote_reference_carrier_name="Acme Logistics",
+        quote_reference_freight_charges=42000,
+        quote_reference_origin_charges=1500,
+        quote_reference_destination_charges=1200,
+        quote_reference_transit_time_days=3,
+        quote_validity_requirement="7 days",
+    )
+    user = auth.UserPrincipal(username="rfqowner1", role=auth.UserRole.RFQOWNER)
+
+    created = await routes.create_rfq(payload, user)
+
+    assert created["quote_reference_carrier_name"] == "Acme Logistics"
+    assert created["quote_reference_freight_charges"] == 42000
+    assert created["quote_reference_origin_charges"] == 1500
+    assert created["quote_reference_destination_charges"] == 1200
+    assert created["quote_reference_transit_time_days"] == 3
+    assert created["quote_validity_requirement"] == "7 days"
+
+
+@pytest.mark.asyncio
 async def test_award_rfq_rejects_active_auction(monkeypatch):
     now = datetime.now(timezone.utc)
     rfq = make_active_rfq(now)

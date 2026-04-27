@@ -15,6 +15,7 @@ from auth import (
     UserRole,
     UserSettings,
     UserSettingsUpdateRequest,
+    UserProfileUpdateRequest,
 )
 from database import users_collection
 from models import UserSignup
@@ -52,6 +53,45 @@ async def get_profile(user: UserPrincipal = Depends(get_current_user)):
         company_name=db_user["username"],
         email=db_user["email"],
         role=UserRole(db_user["role"]),
+        company_url=str(db_user.get("company_url") or ""),
+        about_company=str(db_user.get("about_company") or ""),
+        created_at=db_user["created_at"],
+    )
+
+
+@router.patch("/me", response_model=UserProfileResponse)
+async def update_profile(
+    payload: UserProfileUpdateRequest,
+    user: UserPrincipal = Depends(get_current_user),
+):
+    company_url = (payload.company_url or "").strip()
+    about_company = (payload.about_company or "").strip()
+    update_doc = {
+        "company_url": company_url,
+        "about_company": about_company,
+    }
+    result = await users_collection.update_one(
+        {"username": user.username},
+        {"$set": update_doc},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+    db_user = await users_collection.find_one({"username": user.username})
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    await log_audit(
+        action="profile_updated",
+        username=user.username,
+        role=user.role.value,
+        resource_type="auth",
+        metadata={"updated_fields": ["company_url", "about_company"]},
+    )
+    return UserProfileResponse(
+        company_name=db_user["username"],
+        email=db_user["email"],
+        role=UserRole(db_user["role"]),
+        company_url=str(db_user.get("company_url") or ""),
+        about_company=str(db_user.get("about_company") or ""),
         created_at=db_user["created_at"],
     )
 

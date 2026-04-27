@@ -26,6 +26,12 @@ export default function EditRFQDialog({ rfq, onClose, onSuccess }) {
     starting_price: String(rfq.starting_price ?? 0),
     minimum_decrement: String(rfq.minimum_decrement ?? 0),
     technical_specs_url: rfq.technical_specs_url || "",
+    quote_reference_carrier_name: rfq.quote_reference_carrier_name || "",
+    quote_reference_freight_charges: String(rfq.quote_reference_freight_charges ?? 0),
+    quote_reference_origin_charges: String(rfq.quote_reference_origin_charges ?? 0),
+    quote_reference_destination_charges: String(rfq.quote_reference_destination_charges ?? 0),
+    quote_reference_transit_time_days: String(rfq.quote_reference_transit_time_days ?? 0),
+    quote_validity_requirement: rfq.quote_validity_requirement || "",
   });
 
   return (
@@ -43,6 +49,10 @@ export default function EditRFQDialog({ rfq, onClose, onSuccess }) {
             extension_duration_minutes: Number(form.extension_duration_minutes),
             starting_price: Number(form.starting_price),
             minimum_decrement: Number(form.minimum_decrement),
+            quote_reference_freight_charges: Number(form.quote_reference_freight_charges),
+            quote_reference_origin_charges: Number(form.quote_reference_origin_charges),
+            quote_reference_destination_charges: Number(form.quote_reference_destination_charges),
+            quote_reference_transit_time_days: Number(form.quote_reference_transit_time_days),
           });
         }}
       >
@@ -89,6 +99,12 @@ export default function EditRFQDialog({ rfq, onClose, onSuccess }) {
           </Grid>
           <Grid size={{ xs: 12, md: 6 }}><TextField fullWidth type="number" label="Starting Price (INR)" value={form.starting_price} onChange={(e) => setForm((p) => ({ ...p, starting_price: e.target.value }))} /></Grid>
           <Grid size={{ xs: 12, md: 6 }}><TextField fullWidth type="number" label="Minimum Decrement (INR)" value={form.minimum_decrement} onChange={(e) => setForm((p) => ({ ...p, minimum_decrement: e.target.value }))} /></Grid>
+          <Grid size={{ xs: 12, md: 6 }}><TextField fullWidth label="Reference Carrier Name" value={form.quote_reference_carrier_name} onChange={(e) => setForm((p) => ({ ...p, quote_reference_carrier_name: e.target.value }))} /></Grid>
+          <Grid size={{ xs: 12, md: 6 }}><TextField fullWidth label="Quote Validity Requirement" value={form.quote_validity_requirement} onChange={(e) => setForm((p) => ({ ...p, quote_validity_requirement: e.target.value }))} /></Grid>
+          <Grid size={{ xs: 12, md: 3 }}><TextField fullWidth type="number" label="Reference Freight Charges" value={form.quote_reference_freight_charges} onChange={(e) => setForm((p) => ({ ...p, quote_reference_freight_charges: e.target.value }))} /></Grid>
+          <Grid size={{ xs: 12, md: 3 }}><TextField fullWidth type="number" label="Reference Origin Charges" value={form.quote_reference_origin_charges} onChange={(e) => setForm((p) => ({ ...p, quote_reference_origin_charges: e.target.value }))} /></Grid>
+          <Grid size={{ xs: 12, md: 3 }}><TextField fullWidth type="number" label="Reference Destination Charges" value={form.quote_reference_destination_charges} onChange={(e) => setForm((p) => ({ ...p, quote_reference_destination_charges: e.target.value }))} /></Grid>
+          <Grid size={{ xs: 12, md: 3 }}><TextField fullWidth type="number" label="Reference Transit Time (days)" value={form.quote_reference_transit_time_days} onChange={(e) => setForm((p) => ({ ...p, quote_reference_transit_time_days: e.target.value }))} /></Grid>
           <Grid size={{ xs: 12, md: 6 }}><TextField fullWidth label="Technical Specs URL" value={form.technical_specs_url} onChange={(e) => setForm((p) => ({ ...p, technical_specs_url: e.target.value }))} /></Grid>
         </Grid>
         </DialogContent>

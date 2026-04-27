@@ -110,6 +110,8 @@ function validateForm(form) {
   if (!form.name.trim()) return "RFQ name is required";
   if (!form.material.trim()) return "Material is required";
   if (!form.quantity.trim()) return "Quantity is required";
+  if (!form.quote_reference_carrier_name.trim()) return "Carrier name is required";
+  if (!form.quote_validity_requirement.trim()) return "Validity of quote is required";
   for (const field of DATE_FIELDS) {
     if (!form[field]) return "All date and time fields are required";
   }
@@ -150,6 +152,22 @@ function validateForm(form) {
   }
   if (minimumDecrement >= startingPrice) {
     return "Minimum Decrement must be lower than Starting Price to keep bidding possible";
+  }
+  const quoteFreight = Number(form.quote_reference_freight_charges);
+  const quoteOrigin = Number(form.quote_reference_origin_charges);
+  const quoteDestination = Number(form.quote_reference_destination_charges);
+  const quoteTransit = Number(form.quote_reference_transit_time_days);
+  if (!Number.isFinite(quoteFreight) || quoteFreight < 0) {
+    return "Reference freight charges must be zero or greater";
+  }
+  if (!Number.isFinite(quoteOrigin) || quoteOrigin < 0) {
+    return "Reference origin charges must be zero or greater";
+  }
+  if (!Number.isFinite(quoteDestination) || quoteDestination < 0) {
+    return "Reference destination charges must be zero or greater";
+  }
+  if (!Number.isInteger(quoteTransit) || quoteTransit < 1) {
+    return "Reference transit time must be at least 1 day";
   }
   return "";
 }
@@ -224,6 +242,12 @@ export default function CreateRFQ() {
     technical_specs_content_type: '',
     technical_specs_file_size_bytes: 0,
     loading_unloading_notes: '',
+    quote_reference_carrier_name: '',
+    quote_reference_freight_charges: '',
+    quote_reference_origin_charges: '',
+    quote_reference_destination_charges: '',
+    quote_reference_transit_time_days: '',
+    quote_validity_requirement: '',
   });
 
   function applyTechnicalSpecsToForm(files) {
@@ -351,6 +375,10 @@ export default function CreateRFQ() {
         extension_duration_minutes: Number(form.extension_duration_minutes),
         starting_price: Number(form.starting_price),
         minimum_decrement: Number(form.minimum_decrement),
+        quote_reference_freight_charges: Number(form.quote_reference_freight_charges),
+        quote_reference_origin_charges: Number(form.quote_reference_origin_charges),
+        quote_reference_destination_charges: Number(form.quote_reference_destination_charges),
+        quote_reference_transit_time_days: Number(form.quote_reference_transit_time_days),
       };
 
       const res = await createRFQ(payload);
@@ -409,6 +437,36 @@ export default function CreateRFQ() {
                       </Grid>
                       <Grid size={{ xs: 12 }}>
                         <TextField fullWidth name="delivery_location" label="Delivery Location (Destination)" value={form.delivery_location} onChange={handleChange} />
+                      </Grid>
+                    </Grid>
+                  </Stack>
+                </Grid>
+                <Grid size={{ xs: 12 }}>
+                  <Stack spacing={2}>
+                    <Box>
+                      <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+                        Reference Quote Submission Fields
+                      </Typography>
+                      <Divider sx={{ mt: 0.75 }} />
+                    </Box>
+                    <Grid container spacing={2}>
+                      <Grid size={{ xs: 12, md: 4 }}>
+                        <TextField fullWidth name="quote_reference_carrier_name" label="Carrier Name" value={form.quote_reference_carrier_name} onChange={handleChange} required />
+                      </Grid>
+                      <Grid size={{ xs: 12, md: 4 }}>
+                        <TextField fullWidth type="number" name="quote_reference_freight_charges" label="Freight Charges" value={form.quote_reference_freight_charges} onChange={handleChange} inputProps={{ min: 0, step: "0.01" }} required />
+                      </Grid>
+                      <Grid size={{ xs: 12, md: 4 }}>
+                        <TextField fullWidth type="number" name="quote_reference_origin_charges" label="Origin Charges" value={form.quote_reference_origin_charges} onChange={handleChange} inputProps={{ min: 0, step: "0.01" }} required />
+                      </Grid>
+                      <Grid size={{ xs: 12, md: 4 }}>
+                        <TextField fullWidth type="number" name="quote_reference_destination_charges" label="Destination Charges" value={form.quote_reference_destination_charges} onChange={handleChange} inputProps={{ min: 0, step: "0.01" }} required />
+                      </Grid>
+                      <Grid size={{ xs: 12, md: 3 }}>
+                        <TextField fullWidth type="number" name="quote_reference_transit_time_days" label="Transit Time (days)" value={form.quote_reference_transit_time_days} onChange={handleChange} inputProps={{ min: 1, step: 1 }} required />
+                      </Grid>
+                      <Grid size={{ xs: 12, md: 3 }}>
+                        <TextField fullWidth name="quote_validity_requirement" label="Validity of Quote" value={form.quote_validity_requirement} onChange={handleChange} required helperText="Example: 7 days from bid submission" />
                       </Grid>
                     </Grid>
                   </Stack>

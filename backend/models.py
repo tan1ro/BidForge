@@ -45,6 +45,12 @@ class RFQCreate(BaseModel):
     technical_specs_content_type: Annotated[str, StringConstraints(max_length=120, strip_whitespace=True)] = ""
     technical_specs_file_size_bytes: int = Field(ge=0, default=0)
     loading_unloading_notes: Annotated[str, StringConstraints(max_length=1000, strip_whitespace=True)] = ""
+    quote_reference_carrier_name: Annotated[str, StringConstraints(max_length=80, strip_whitespace=True)] = ""
+    quote_reference_freight_charges: float = Field(ge=0, default=0)
+    quote_reference_origin_charges: float = Field(ge=0, default=0)
+    quote_reference_destination_charges: float = Field(ge=0, default=0)
+    quote_reference_transit_time_days: int = Field(ge=0, default=0)
+    quote_validity_requirement: Annotated[str, StringConstraints(max_length=120, strip_whitespace=True)] = ""
 
 
 class RFQUpdate(BaseModel):
@@ -70,6 +76,12 @@ class RFQUpdate(BaseModel):
     technical_specs_content_type: Annotated[str, StringConstraints(max_length=120, strip_whitespace=True)] | None = None
     technical_specs_file_size_bytes: int | None = Field(default=None, ge=0)
     loading_unloading_notes: Annotated[str, StringConstraints(max_length=1000, strip_whitespace=True)] | None = None
+    quote_reference_carrier_name: Annotated[str, StringConstraints(max_length=80, strip_whitespace=True)] | None = None
+    quote_reference_freight_charges: float | None = Field(default=None, ge=0)
+    quote_reference_origin_charges: float | None = Field(default=None, ge=0)
+    quote_reference_destination_charges: float | None = Field(default=None, ge=0)
+    quote_reference_transit_time_days: int | None = Field(default=None, ge=0)
+    quote_validity_requirement: Annotated[str, StringConstraints(max_length=120, strip_whitespace=True)] | None = None
 
 
 class RFQResponse(BaseModel):
@@ -98,6 +110,12 @@ class RFQResponse(BaseModel):
     technical_specs_content_type: str = ""
     technical_specs_file_size_bytes: int = 0
     loading_unloading_notes: str = ""
+    quote_reference_carrier_name: str = ""
+    quote_reference_freight_charges: float = 0
+    quote_reference_origin_charges: float = 0
+    quote_reference_destination_charges: float = 0
+    quote_reference_transit_time_days: int = 0
+    quote_validity_requirement: str = ""
     awarded_bidder: Optional[str] = None
     awarded_bid_id: Optional[str] = None
     awarded_at: Optional[datetime] = None
@@ -107,6 +125,8 @@ class RFQResponse(BaseModel):
     total_bids: int = 0
     winner_carrier: Optional[str] = None
     winning_bid_total: Optional[float] = None
+    owner_company_url: str = ""
+    owner_about_company: str = ""
     server_time: datetime
     created_at: datetime
 

@@ -84,7 +84,9 @@ export function openFileLink(url, fileName) {
 }
 
 export function getTimeRemaining(targetDate, nowMs = Date.now()) {
-  const diff = new Date(targetDate).getTime() - nowMs;
+  const targetMs = new Date(targetDate).getTime();
+  if (!Number.isFinite(targetMs)) return { expired: true, text: "Expired" };
+  const diff = targetMs - nowMs;
   if (diff <= 0) return { expired: true, text: "Expired" };
   const hours = Math.floor(diff / (1000 * 60 * 60));
   const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));

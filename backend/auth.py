@@ -9,7 +9,7 @@ from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from config import settings
 from database import users_collection
@@ -52,7 +52,14 @@ class UserProfileResponse(BaseModel):
     company_name: str
     email: str
     role: UserRole
+    company_url: str = ""
+    about_company: str = ""
     created_at: datetime
+
+
+class UserProfileUpdateRequest(BaseModel):
+    company_url: str = Field(default="", max_length=1000)
+    about_company: str = Field(default="", max_length=3000)
 
 
 class UserSettings(BaseModel):
@@ -159,6 +166,8 @@ async def create_user(company_name: str, email: str, password: str, role: UserRo
                 "date_format": "medium",
                 "auto_refresh_seconds": 10,
             },
+            "company_url": "",
+            "about_company": "",
             "created_at": datetime.now(timezone.utc),
         }
     )

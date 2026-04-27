@@ -50,8 +50,10 @@ function formatCurrency(val) {
 }
 
 function countdownTo(target) {
-  const end = new Date(target).getTime() - Date.now();
-  if (end <= 0) return "—";
+  const targetMs = new Date(target).getTime();
+  if (!Number.isFinite(targetMs)) return "—";
+  const end = targetMs - Date.now();
+  if (end <= 0) return "00:00:00";
   const s = Math.floor(end / 1000);
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);

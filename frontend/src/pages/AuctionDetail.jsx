@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams, Link, useLocation } from "react-router-dom";
 import {
   Alert,
@@ -98,6 +98,7 @@ export default function AuctionDetail({ role }) {
   const [snack, setSnack] = useState({ open: false, message: "", severity: "success" });
   const [activityEventType, setActivityEventType] = useState("");
   const [serverOffsetMs, setServerOffsetMs] = useState(0);
+  const boundaryRefreshAtRef = useRef(0);
 
   const showToastMessage = useCallback((message, type = "success") => {
     setSnack({ open: true, message, severity: type === "error" ? "error" : "success" });
@@ -183,6 +184,19 @@ export default function AuctionDetail({ role }) {
     const interval = setInterval(tick, 1000);
     return () => clearInterval(interval);
   }, [rfq, serverOffsetMs]);
+
+  useEffect(() => {
+    if (!rfq || !timer.expired) return;
+    if (!(rfq.status === "upcoming" || rfq.status === "active")) return;
+    const now = Date.now();
+    // Keep UI and backend status aligned right at start/close boundary.
+    if (now - boundaryRefreshAtRef.current < 2000) return;
+    boundaryRefreshAtRef.current = now;
+    const id = setTimeout(() => {
+      void loadData();
+    }, 300);
+    return () => clearTimeout(id);
+  }, [rfq, timer.expired, loadData]);
 
   if (loading) {
     return (
@@ -378,6 +392,21 @@ export default function AuctionDetail({ role }) {
                 <Typography>{rfq.delivery_location || "—"}</Typography>
               </Grid>
             </Grid>
+          </CardContent>
+        </Card>
+      )}
+      {role === "bidder" && (rfq.owner_about_company || rfq.owner_company_url) && (
+        <Card>
+          <CardContent>
+            <Typography variant="h6" sx={{ mb: 1 }}>About Buyer Company</Typography>
+            {rfq.owner_company_url && (
+              <Typography variant="body2" sx={{ mb: 1 }}>
+                Website: {rfq.owner_company_url}
+              </Typography>
+            )}
+            <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
+              {rfq.owner_about_company || "Not provided"}
+            </Typography>
           </CardContent>
         </Card>
       )}

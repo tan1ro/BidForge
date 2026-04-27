@@ -27,8 +27,9 @@ import { formatDate } from "../utils/auctionFormatters";
 function countDownTo(target) {
   const end = new Date(target).getTime();
   return () => {
+    if (!Number.isFinite(end)) return "—";
     const t = end - Date.now();
-    if (t <= 0) return "Closed";
+    if (t <= 0) return "00:00:00";
     const s = Math.floor(t / 1000);
     const h = Math.floor(s / 3600);
     const m = Math.floor((s % 3600) / 60);

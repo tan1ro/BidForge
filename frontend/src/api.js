@@ -38,6 +38,7 @@ api.interceptors.response.use(
 export const login = (data) => api.post('/auth/login', data);
 export const signup = (data) => api.post('/auth/signup', data);
 export const getProfile = () => api.get('/auth/me');
+export const updateProfile = (data) => api.patch('/auth/me', data);
 export const getProfileSettings = () => api.get('/auth/settings');
 export const updateProfileSettings = (data) => api.patch('/auth/settings', data);
 

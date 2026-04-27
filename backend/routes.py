@@ -50,6 +50,8 @@ def serialize_rfq(
     total_bids=0,
     winner_carrier=None,
     winning_bid_total=None,
+    owner_company_url: str = "",
+    owner_about_company: str = "",
     status_override: str | None = None,
 ) -> dict:
     st = status_override if status_override is not None else doc.get("status")
@@ -79,6 +81,12 @@ def serialize_rfq(
         technical_specs_content_type=doc.get("technical_specs_content_type", ""),
         technical_specs_file_size_bytes=doc.get("technical_specs_file_size_bytes", 0),
         loading_unloading_notes=doc.get("loading_unloading_notes", ""),
+        quote_reference_carrier_name=doc.get("quote_reference_carrier_name", ""),
+        quote_reference_freight_charges=doc.get("quote_reference_freight_charges", 0),
+        quote_reference_origin_charges=doc.get("quote_reference_origin_charges", 0),
+        quote_reference_destination_charges=doc.get("quote_reference_destination_charges", 0),
+        quote_reference_transit_time_days=doc.get("quote_reference_transit_time_days", 0),
+        quote_validity_requirement=doc.get("quote_validity_requirement", ""),
         awarded_bidder=doc.get("awarded_bidder"),
         awarded_bid_id=doc.get("awarded_bid_id"),
         awarded_at=doc.get("awarded_at"),
@@ -88,6 +96,8 @@ def serialize_rfq(
         total_bids=total_bids,
         winner_carrier=winner_carrier,
         winning_bid_total=winning_bid_total,
+        owner_company_url=owner_company_url,
+        owner_about_company=owner_about_company,
         server_time=datetime.now(timezone.utc),
         created_at=doc["created_at"],
     ).model_dump(mode="json")
@@ -439,6 +449,12 @@ async def create_rfq(
         "technical_specs_content_type": rfq.technical_specs_content_type,
         "technical_specs_file_size_bytes": rfq.technical_specs_file_size_bytes,
         "loading_unloading_notes": rfq.loading_unloading_notes,
+        "quote_reference_carrier_name": rfq.quote_reference_carrier_name,
+        "quote_reference_freight_charges": rfq.quote_reference_freight_charges,
+        "quote_reference_origin_charges": rfq.quote_reference_origin_charges,
+        "quote_reference_destination_charges": rfq.quote_reference_destination_charges,
+        "quote_reference_transit_time_days": rfq.quote_reference_transit_time_days,
+        "quote_validity_requirement": rfq.quote_validity_requirement,
         "awarded_bidder": None,
         "awarded_bid_id": None,
         "awarded_at": None,
@@ -540,6 +556,14 @@ async def get_rfq(
     if st in (AuctionStatus.CLOSED, AuctionStatus.FORCE_CLOSED) and l1 is not None:
         winner_carrier, winning_bid_total = l1.get("carrier_name"), l1.get("total_price")
     base = strip_internal_fields(doc)
+    owner_company_url = ""
+    owner_about_company = ""
+    owner_username = base.get("created_by")
+    if owner_username:
+        owner_doc = await users_collection.find_one({"username": owner_username})
+        if owner_doc:
+            owner_company_url = str(owner_doc.get("company_url") or "")
+            owner_about_company = str(owner_doc.get("about_company") or "")
     await log_audit(
         action="rfq_viewed",
         username=user.username,
@@ -553,6 +577,8 @@ async def get_rfq(
         total_bids,
         winner_carrier,
         winning_bid_total,
+        owner_company_url=owner_company_url,
+        owner_about_company=owner_about_company,
         status_override=st,
     )
 
