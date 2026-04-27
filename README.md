@@ -337,6 +337,12 @@ Response shape:
 - Architecture diagram: `frontend/src/assets/diagram-system.svg`
 - Auction flow diagram: `frontend/src/assets/diagram-flow.svg`
 
+## Deployment (Current)
+
+- Frontend hosting: Vercel
+- Frontend live URL: `https://bid-forge-nandeeshk.vercel.app/`
+- Backend hosting: Render
+
 ## Notes for Production Deployment
 
 - Use a strong `JWT_SECRET` and secure Mongo credentials.

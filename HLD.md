@@ -198,6 +198,9 @@ Supported extension trigger policies per RFQ:
 - No external queue is currently required.
 - Optional AI integration: Google Gemini API for dashboard recommendations.
 - Frontend and backend are independently deployable; communication over REST + WebSocket.
+- Current hosting setup:
+  - Frontend: Vercel (`https://bid-forge-nandeeshk.vercel.app/`)
+  - Backend: Render
 
 ## 7) Security and Compliance Controls
 
