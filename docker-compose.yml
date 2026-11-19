@@ -15,7 +15,7 @@ services:
       - MONGODB_URL=mongodb://mongo:27017
       - DATABASE_NAME=british_auction_rfq
       - CORS_ORIGINS=http://localhost:5173
-      - JWT_SECRET=change-me-in-production
+      - JWT_SECRET=${JWT_SECRET:?Set JWT_SECRET in your environment}
       - JWT_ALGORITHM=HS256
       - JWT_EXPIRES_MINUTES=120
       - RATE_LIMIT_PER_MINUTE=120
