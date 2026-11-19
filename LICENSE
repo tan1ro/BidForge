@@ -1,0 +1,77 @@
+# BidForge Commercial License
+
+Copyright (c) 2026 tan1ro
+
+## 1. Purpose
+
+This repository contains the BidForge software and related source code, documentation, architecture materials, diagrams, and other assets (collectively, the "Software").
+
+The Software is provided under this commercial, agreement-based license. It is **not** licensed under the MIT License, Apache License, GPL, BSD, or any other open-source license.
+
+## 2. No General Commercial Use
+
+Viewing, downloading, or studying the public repository does not by itself grant any right to use the Software in a commercial product, production environment, paid service, internal business system, or revenue-generating activity.
+
+No person or organization may, without a separate written commercial license agreement signed by the copyright owner:
+
+- deploy or operate the Software for commercial or revenue-generating purposes;
+- incorporate the Software, in whole or in substantial part, into a commercial product or service;
+- modify, adapt, or create derivative works of the Software for commercial use;
+- sublicense, sell, rent, lease, resell, distribute, or otherwise commercialize the Software;
+- provide the Software as part of a managed service, SaaS, hosted service, procurement platform, RFQ platform, auction platform, or similar commercial offering.
+
+## 3. Commercial License by Agreement
+
+Commercial use is available only under a separate written agreement with the copyright owner.
+
+A commercial agreement may specify, among other things:
+
+- licensee legal entity;
+- permitted application/product;
+- permitted deployment and environments;
+- number of installations, users, customers, or tenants;
+- territory;
+- license term;
+- support and maintenance, if any;
+- attribution requirements;
+- modification and derivative-work rights;
+- redistribution rights, if any;
+- commercial license fee and payment schedule.
+
+The commercial license becomes effective only when the applicable written agreement has been accepted/signed by both parties and any required license fee has been paid.
+
+## 4. Evaluation / Non-Commercial Use
+
+Unless separately restricted by applicable law, the copyright owner permits reasonable internal evaluation, testing, security review, and educational/non-commercial study of the Software.
+
+This permission does not include production deployment or commercial exploitation.
+
+## 5. Ownership
+
+The Software remains the exclusive intellectual property of the copyright owner and/or its licensors.
+
+A commercial license grants only the rights expressly stated in the applicable written agreement. It does not transfer ownership or copyright.
+
+## 6. Third-Party Components
+
+The Software may depend on third-party libraries, frameworks, services, or other materials that are subject to their own licenses. Those third-party licenses remain applicable and are not replaced by this license.
+
+## 7. No Warranty
+
+THE SOFTWARE IS PROVIDED "AS IS" AND WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, TO THE MAXIMUM EXTENT PERMITTED BY LAW. THE COPYRIGHT OWNER DISCLAIMS WARRANTIES INCLUDING MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.
+
+## 8. Limitation of Liability
+
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE COPYRIGHT OWNER SHALL NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, EXEMPLARY, OR PUNITIVE DAMAGES ARISING FROM OR RELATED TO THE SOFTWARE OR ITS USE.
+
+## 9. Termination
+
+Any rights granted under a separate commercial license agreement terminate according to the terms of that agreement. Upon termination, the licensee must cease all uses not expressly permitted to continue under the agreement.
+
+## 10. Contact for Commercial Licensing
+
+For commercial licensing, please open a GitHub issue describing the intended use or contact the copyright owner through the contact information associated with this repository.
+
+## 11. Acceptance
+
+Use of the Software beyond the limited evaluation/non-commercial permission above requires a separate written commercial license agreement. No implied commercial license is granted by publication of this repository.
